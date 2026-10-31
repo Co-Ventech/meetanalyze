@@ -1,0 +1,9 @@
+const path = require('path');
+
+module.exports = {
+  config: path.resolve('config', 'config.js'),
+  'migrations-path': path.resolve('src/database', 'migrations'),
+  'seeders-path': path.resolve('src/database', 'seeders'),
+};
+
+// migration command: npx sequelize migration:create --name create-user
