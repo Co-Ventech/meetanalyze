@@ -1,11 +1,11 @@
-# MeetLyst
+# MeetAnalyze
 
 A full-stack Chrome extension with backend service for Google Meet intelligence and automation.
 
 ## Project Structure
 
 ```
-meetlyst/
+meetanalyze/
 ├── backend/                  # Fastify backend service (Node.js, Sequelize, PostgreSQL)
 │   ├── config/               # Database and server configuration
 │   ├── src/                  # Controllers, models, routes, services, validators

@@ -1,7 +1,7 @@
 {
-  "name": "meetlyst-backend",
+  "name": "meetanalyze-backend",
   "version": "1.0.0",
-  "description": "MeetLyst Backend Service",
+  "description": "MeetAnalyze Backend Service",
   "type": "commonjs",
   "main": "server.js",
   "scripts": {

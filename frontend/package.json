@@ -1,6 +1,6 @@
 {
-  "name": "meetlyst-frontend",
-  "description": "MeetLyst Chrome Extension Frontend",
+  "name": "meetanalyze-frontend",
+  "description": "MeetAnalyze Chrome Extension Frontend",
   "private": true,
   "version": "0.0.0",
   "type": "module",
