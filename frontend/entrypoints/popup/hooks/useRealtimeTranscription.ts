@@ -1,9 +1,93 @@
 import { useState, useRef, useCallback } from 'react';
+import { getGoogleMeetTab } from '../../utils/check-google-meet-connection';
+
+declare const chrome: any;
 
 export interface UseRealtimeTranscriptionOptions {
   apiBaseUrl?: string;
   onTranscript?: (text: string, isFinal: boolean) => void;
   onError?: (error: Error) => void;
+}
+
+// Helper to capture tab audio via Chrome MV3 tabCapture API
+async function getTabAudioStream(targetTabId: number): Promise<MediaStream> {
+  // Strategy 1: chrome.tabCapture.getMediaStreamId
+  if (typeof chrome !== 'undefined' && chrome.tabCapture?.getMediaStreamId) {
+    try {
+      const streamId = await new Promise<string>((resolve, reject) => {
+        chrome.tabCapture.getMediaStreamId({ targetTabId }, (id: string | null) => {
+          if (chrome.runtime.lastError) {
+            return reject(new Error(chrome.runtime.lastError.message));
+          }
+          if (!id) {
+            return reject(new Error('Failed to acquire tab media stream ID'));
+          }
+          resolve(id);
+        });
+      });
+
+      console.log('[MeetAnalyze] Acquired tab mediaStreamId:', streamId);
+
+      // In Chromium, chromeMediaSource: 'tab' with getUserMedia requires both audio and video constraints
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            mandatory: {
+              chromeMediaSource: 'tab',
+              chromeMediaSourceId: streamId,
+            },
+          } as unknown as MediaTrackConstraints,
+          video: {
+            mandatory: {
+              chromeMediaSource: 'tab',
+              chromeMediaSourceId: streamId,
+            },
+          } as unknown as MediaTrackConstraints,
+        });
+
+        // Stop video tracks immediately so only tab audio is captured and resources are freed
+        stream.getVideoTracks().forEach((track) => track.stop());
+        return stream;
+      } catch (errWithVideo) {
+        console.warn('[MeetAnalyze] getUserMedia with video+audio constraints failed, attempting audio-only:', errWithVideo);
+        // Fallback: try audio-only constraint
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            mandatory: {
+              chromeMediaSource: 'tab',
+              chromeMediaSourceId: streamId,
+            },
+          } as unknown as MediaTrackConstraints,
+        });
+        return stream;
+      }
+    } catch (streamIdErr) {
+      console.warn('[MeetAnalyze] getMediaStreamId path failed, checking direct capture:', streamIdErr);
+    }
+  }
+
+  // Strategy 2: Direct chrome.tabCapture.capture (supported in extension popup foreground)
+  if (typeof chrome !== 'undefined' && chrome.tabCapture?.capture) {
+    try {
+      const stream = await new Promise<MediaStream>((resolve, reject) => {
+        chrome.tabCapture.capture({ audio: true, video: false }, (resStream: MediaStream | null) => {
+          if (chrome.runtime.lastError) {
+            return reject(new Error(chrome.runtime.lastError.message));
+          }
+          if (!resStream) {
+            return reject(new Error('chrome.tabCapture.capture returned null stream'));
+          }
+          resolve(resStream);
+        });
+      });
+      return stream;
+    } catch (captureErr) {
+      console.warn('[MeetAnalyze] Direct tabCapture.capture failed:', captureErr);
+      throw captureErr;
+    }
+  }
+
+  throw new Error('Tab capture is not supported or failed on this browser context');
 }
 
 export function useRealtimeTranscription({
@@ -13,6 +97,7 @@ export function useRealtimeTranscription({
 }: UseRealtimeTranscriptionOptions = {}) {
   const [isRecording, setIsRecording] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [isTabAudioCaptured, setIsTabAudioCaptured] = useState(false);
   const [partialTranscript, setPartialTranscript] = useState('');
   const [finalTranscripts, setFinalTranscripts] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -20,7 +105,8 @@ export function useRealtimeTranscription({
 
   const socketRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const tabStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
 
   // Helper to convert Float32 audio samples from Web Audio API to 16-bit Linear PCM (Little Endian)
@@ -40,14 +126,19 @@ export function useRealtimeTranscription({
       processorRef.current.disconnect();
       processorRef.current = null;
     }
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
-      mediaStreamRef.current = null;
+    if (tabStreamRef.current) {
+      tabStreamRef.current.getTracks().forEach((track) => track.stop());
+      tabStreamRef.current = null;
+    }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((track) => track.stop());
+      micStreamRef.current = null;
     }
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       audioContextRef.current.close().catch(console.error);
       audioContextRef.current = null;
     }
+    setIsTabAudioCaptured(false);
   };
 
   const stopRecording = useCallback(() => {
@@ -86,15 +177,34 @@ export function useRealtimeTranscription({
         throw new Error('No token returned from backend server.');
       }
 
-      // 2. Request microphone audio stream
-      let stream: MediaStream;
+      // 2. Capture Google Meet Tab Audio (for guest/other participants' voices)
+      let tabStream: MediaStream | null = null;
+      const meetTab = await getGoogleMeetTab();
+      if (meetTab?.id) {
+        try {
+          tabStream = await getTabAudioStream(meetTab.id);
+          tabStreamRef.current = tabStream;
+          setIsTabAudioCaptured(true);
+          console.log('[MeetAnalyze] Captured Google Meet tab audio stream successfully:', tabStream.getAudioTracks());
+        } catch (tabErr) {
+          console.error('[MeetAnalyze] Tab capture failed:', tabErr);
+          setIsTabAudioCaptured(false);
+        }
+      } else {
+        console.warn('[MeetAnalyze] No Google Meet tab found during startRecording.');
+        setIsTabAudioCaptured(false);
+      }
+
+      // 3. Capture Microphone Audio (for user's voice)
+      let micStream: MediaStream | null = null;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        micStream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
           },
         });
+        micStreamRef.current = micStream;
       } catch (micErr: unknown) {
         const err = micErr as { name?: string; message?: string };
         if (
@@ -105,20 +215,24 @@ export function useRealtimeTranscription({
           err.message?.toLowerCase().includes('permission')
         ) {
           setIsPermissionRequired(true);
-          throw new Error('Microphone permission required. Chrome does not allow prompts in extension popups—please grant permission once via the permission tab.');
+          throw new Error('Microphone permission required. Please grant permission once in the permission tab.');
         }
         throw micErr;
       }
-      mediaStreamRef.current = stream;
 
-      // 3. Initialize AudioContext
+      // 4. Initialize AudioContext and mix audio sources
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       const audioContext = new AudioCtx();
       audioContextRef.current = audioContext;
+
+      // Chrome starts AudioContext in 'suspended' state by default; resume it
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
+
       const sampleRate = audioContext.sampleRate;
 
-      // 4. Connect to AssemblyAI Streaming v3 WebSocket
-      // universal-3-6-pro is the flagship streaming model (32 languages, native code-switching)
+      // 5. Connect to AssemblyAI Streaming v3 WebSocket
       const wsUrl = `wss://streaming.assemblyai.com/v3/ws?token=${token}&sample_rate=${sampleRate}&speech_model=universal-3-6-pro`;
       const socket = new WebSocket(wsUrl);
       socketRef.current = socket;
@@ -128,11 +242,31 @@ export function useRealtimeTranscription({
         setIsRecording(true);
         console.log('Connected to AssemblyAI Streaming v3');
 
-        // 5. Pipe microphone audio chunks to WebSocket as 16-bit PCM
-        const source = audioContext.createMediaStreamSource(stream);
-        // 2048 buffer size gives ~40-100ms chunks depending on sample rate
+        // 2048 buffer size produces ~40-100ms chunks (optimal for AssemblyAI v3)
         const processor = audioContext.createScriptProcessor(2048, 1, 1);
         processorRef.current = processor;
+
+        // Route 1: Connect microphone to processor (to transcribe local user's voice)
+        if (micStream) {
+          const micSource = audioContext.createMediaStreamSource(micStream);
+          const micGain = audioContext.createGain();
+          micGain.gain.value = 1.0;
+          micSource.connect(micGain);
+          micGain.connect(processor);
+        }
+
+        // Route 2: Connect Google Meet tab audio to processor (to transcribe other participants/guests)
+        // AND route to audioContext.destination (so the user can still hear other participants in their headphones/speakers!)
+        if (tabStream) {
+          const tabSource = audioContext.createMediaStreamSource(tabStream);
+          const tabGain = audioContext.createGain();
+          tabGain.gain.value = 1.3; // Give remote participants a slight boost for crisp STT
+          tabSource.connect(tabGain);
+          tabGain.connect(processor);
+
+          // Route to destination so user hears the meeting output
+          tabSource.connect(audioContext.destination);
+        }
 
         processor.onaudioprocess = (e) => {
           if (socket.readyState === WebSocket.OPEN) {
@@ -140,9 +274,13 @@ export function useRealtimeTranscription({
             const pcmBuffer = floatTo16BitPCM(inputData);
             socket.send(pcmBuffer);
           }
+
+          // Zero out processor output to prevent local microphone loopback/echo
+          const outputData = e.outputBuffer.getChannelData(0);
+          outputData.fill(0);
         };
 
-        source.connect(processor);
+        // Note: processor must be connected to destination for Chrome to process onaudioprocess
         processor.connect(audioContext.destination);
       };
 
@@ -205,6 +343,7 @@ export function useRealtimeTranscription({
   return {
     isRecording,
     isConnecting,
+    isTabAudioCaptured,
     isPermissionRequired,
     partialTranscript,
     finalTranscripts,

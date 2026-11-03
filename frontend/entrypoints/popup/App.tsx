@@ -10,6 +10,7 @@ function App() {
   const {
     isRecording,
     isConnecting,
+    isTabAudioCaptured,
     isPermissionRequired,
     partialTranscript,
     finalTranscripts,
@@ -18,7 +19,7 @@ function App() {
     stopRecording,
     clearTranscripts,
   } = useRealtimeTranscription({
-    apiBaseUrl: 'http://localhost:5000',
+    apiBaseUrl: (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:5000',
   });
 
   const checkMeet = async () => {
@@ -46,12 +47,12 @@ function App() {
   }, []);
 
   return (
-    <div className="w-[380px] p-4 bg-slate-900 text-white font-sans rounded-lg shadow-xl flex flex-col gap-3 min-h-[470px]">
+    <div className="w-[380px] p-4 bg-slate-900 text-white font-sans rounded-lg shadow-xl flex flex-col gap-3 min-h-[490px]">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-slate-800 pb-3">
         <div>
           <h1 className="text-lg font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
-            MeetLyst
+            MeetAnalyze Live STT
           </h1>
           <p className="text-xs text-slate-400 flex items-center gap-1.5 mt-0.5">
             <span
@@ -87,6 +88,50 @@ function App() {
           >
             Grant Microphone Permission 🎙️
           </button>
+        </div>
+      )}
+
+      {/* Active Audio Channel Badges */}
+      <div className="flex items-center gap-2 text-[11px]">
+        <div
+          className={`flex-1 flex items-center justify-center gap-1.5 py-1 px-2 rounded border ${
+            isRecording
+              ? 'bg-blue-950/60 border-blue-700/60 text-blue-300'
+              : 'bg-slate-950 border-slate-800 text-slate-500'
+          }`}
+        >
+          <span>🎙️</span>
+          <span>Your Mic: {isRecording ? 'Active' : 'Off'}</span>
+        </div>
+
+        <div
+          className={`flex-1 flex items-center justify-center gap-1.5 py-1 px-2 rounded border ${
+            isRecording && isTabAudioCaptured
+              ? 'bg-emerald-950/60 border-emerald-700/60 text-emerald-300'
+              : isRecording && !isTabAudioCaptured
+              ? 'bg-amber-950/60 border-amber-700/60 text-amber-300 animate-pulse'
+              : 'bg-slate-950 border-slate-800 text-slate-500'
+          }`}
+        >
+          <span>🔊</span>
+          <span>
+            Guest Audio:{' '}
+            {isRecording
+              ? isTabAudioCaptured
+                ? 'Active'
+                : 'Not Found'
+              : isMeetConnected
+              ? 'Ready'
+              : 'Off'}
+          </span>
+        </div>
+      </div>
+
+      {/* Warning if recording but Google Meet guest audio was not captured */}
+      {isRecording && !isTabAudioCaptured && (
+        <div className="p-2 bg-amber-950/70 border border-amber-700/60 rounded text-[11px] text-amber-200 flex items-center gap-1.5">
+          <span>⚠️</span>
+          <span>Only your microphone is currently active. Open/join your Google Meet call to transcribe other participants.</span>
         </div>
       )}
 
@@ -148,15 +193,15 @@ function App() {
               isRecording ? 'bg-red-500 animate-ping' : isConnecting ? 'bg-amber-400' : 'bg-slate-600'
             }`}
           />
-          {isRecording ? 'Listening...' : isConnecting ? 'Authenticating...' : 'Idle'}
+          {isRecording ? 'Listening to Call...' : isConnecting ? 'Connecting...' : 'Idle'}
         </span>
       </div>
 
       {/* Live Transcript Display Box */}
-      <div className="flex-1 bg-slate-950 border border-slate-800 rounded-md p-3 overflow-y-auto max-h-[240px] flex flex-col gap-2 select-text text-sm leading-relaxed">
+      <div className="flex-1 bg-slate-950 border border-slate-800 rounded-md p-3 overflow-y-auto max-h-[230px] flex flex-col gap-2 select-text text-sm leading-relaxed">
         {finalTranscripts.length === 0 && !partialTranscript && (
           <div className="m-auto text-center text-slate-500 text-xs py-8">
-            Click <strong>Start Live Transcription</strong> and begin speaking. Your voice will appear here in real time.
+            Click <strong>Start Live Transcription</strong> while in Google Meet. Both your voice and other participants will be transcribed here.
           </div>
         )}
 

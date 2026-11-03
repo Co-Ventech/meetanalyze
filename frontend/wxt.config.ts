@@ -7,10 +7,13 @@ export default defineConfig({
   manifest: {
     name: 'MeetAnalyze',
     description: 'Real-time meeting audio capture and transcription',
-    permissions: ['activeTab', 'tabs'],
+    permissions: ['activeTab', 'tabs', 'tabCapture'],
     host_permissions: [
+      '*://meet.google.com/*',
+      'https://meet.google.com/*',
       'http://localhost:5000/*',
       'http://127.0.0.1:5000/*',
+      'https://*.vercel.app/*',
       'https://streaming.assemblyai.com/*',
     ],
   },
