@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { getGoogleMeetTab } from '../../utils/check-google-meet-connection';
+import type { TranscriptTurn, PartialTranscriptState } from '../../common/types';
 
 declare const chrome: any;
 
@@ -7,6 +8,33 @@ export interface UseRealtimeTranscriptionOptions {
   apiBaseUrl?: string;
   onTranscript?: (text: string, isFinal: boolean) => void;
   onError?: (error: Error) => void;
+}
+
+function normalizeTurns(items: any[]): TranscriptTurn[] {
+  if (!Array.isArray(items)) return [];
+  return items.map((item, idx) => {
+    if (typeof item === 'string') {
+      return {
+        id: `legacy_${idx}`,
+        speaker: 'Participant',
+        isSelf: false,
+        text: item,
+        timestamp: '',
+      };
+    }
+    return item;
+  });
+}
+
+function normalizePartial(partial: any): PartialTranscriptState | null {
+  if (!partial) return null;
+  if (typeof partial === 'string') {
+    return partial.trim() ? { speaker: 'Speaker', isSelf: false, text: partial } : null;
+  }
+  if (typeof partial === 'object' && partial.text?.trim()) {
+    return partial;
+  }
+  return null;
 }
 
 export function useRealtimeTranscription({
@@ -17,8 +45,8 @@ export function useRealtimeTranscription({
   const [isRecording, setIsRecording] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isTabAudioCaptured, setIsTabAudioCaptured] = useState(false);
-  const [partialTranscript, setPartialTranscript] = useState('');
-  const [finalTranscripts, setFinalTranscripts] = useState<string[]>([]);
+  const [partialTranscript, setPartialTranscript] = useState<PartialTranscriptState | null>(null);
+  const [finalTranscripts, setFinalTranscripts] = useState<TranscriptTurn[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isPermissionRequired, setIsPermissionRequired] = useState(false);
 
@@ -38,11 +66,9 @@ export function useRealtimeTranscription({
           if (typeof stored.isTabAudioCaptured === 'boolean') {
             setIsTabAudioCaptured(stored.isTabAudioCaptured);
           }
-          if (typeof stored.partialTranscript === 'string') {
-            setPartialTranscript(stored.partialTranscript);
-          }
+          setPartialTranscript(normalizePartial(stored.partialTranscript));
           if (Array.isArray(stored.finalTranscripts)) {
-            setFinalTranscripts(stored.finalTranscripts);
+            setFinalTranscripts(normalizeTurns(stored.finalTranscripts));
           }
         }
       );
@@ -58,11 +84,9 @@ export function useRealtimeTranscription({
         if (typeof response.isTabAudioCaptured === 'boolean') {
           setIsTabAudioCaptured(response.isTabAudioCaptured);
         }
-        if (typeof response.partialTranscript === 'string') {
-          setPartialTranscript(response.partialTranscript);
-        }
+        setPartialTranscript(normalizePartial(response.partialTranscript));
         if (Array.isArray(response.finalTranscripts)) {
-          setFinalTranscripts(response.finalTranscripts);
+          setFinalTranscripts(normalizeTurns(response.finalTranscripts));
         }
       });
     } catch (err) {
@@ -78,22 +102,22 @@ export function useRealtimeTranscription({
         setIsConnecting(false);
         setIsTabAudioCaptured(!!message.isTabAudioCaptured);
       } else if (message.type === 'TRANSCRIPT_UPDATE') {
-        if (typeof message.partialTranscript === 'string') {
-          setPartialTranscript(message.partialTranscript);
-        }
+        const normPartial = normalizePartial(message.partialTranscript);
+        setPartialTranscript(normPartial);
+
         if (Array.isArray(message.finalTranscripts)) {
-          setFinalTranscripts(message.finalTranscripts);
+          setFinalTranscripts(normalizeTurns(message.finalTranscripts));
         }
-        if (onTranscript && (message.partialTranscript || message.isFinal)) {
-          onTranscript(message.partialTranscript || '', !!message.isFinal);
+        if (onTranscript && (normPartial?.text || message.isFinal)) {
+          onTranscript(normPartial?.text || '', !!message.isFinal);
         }
       } else if (message.type === 'RECORDING_STOPPED') {
         setIsRecording(false);
         setIsConnecting(false);
         setIsTabAudioCaptured(false);
-        setPartialTranscript('');
+        setPartialTranscript(null);
         if (Array.isArray(message.finalTranscripts)) {
-          setFinalTranscripts(message.finalTranscripts);
+          setFinalTranscripts(normalizeTurns(message.finalTranscripts));
         }
       } else if (message.type === 'RECORDING_ERROR') {
         setIsRecording(false);
@@ -169,12 +193,13 @@ export function useRealtimeTranscription({
         }
       }
 
-      // 4. Send command to background to start persistent offscreen recording
+      // 4. Send command to background to start persistent offscreen recording with speaker tracking
       chrome.runtime.sendMessage(
         {
           type: 'START_RECORDING',
           streamId,
           token,
+          targetTabId: meetTab?.id,
         },
         (res: any) => {
           setIsConnecting(false);
@@ -199,7 +224,7 @@ export function useRealtimeTranscription({
   const stopRecording = useCallback(() => {
     setIsConnecting(false);
     setIsRecording(false);
-    setPartialTranscript('');
+    setPartialTranscript(null);
 
     try {
       chrome.runtime.sendMessage({ type: 'STOP_RECORDING' });
@@ -210,7 +235,7 @@ export function useRealtimeTranscription({
 
   const clearTranscripts = useCallback(() => {
     setFinalTranscripts([]);
-    setPartialTranscript('');
+    setPartialTranscript(null);
     chrome.storage?.local?.set?.({
       finalTranscripts: [],
       partialTranscript: '',

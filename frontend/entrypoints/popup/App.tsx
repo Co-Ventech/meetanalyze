@@ -189,7 +189,7 @@ function App() {
 
         <button
           onClick={clearTranscripts}
-          disabled={finalTranscripts.length === 0 && !partialTranscript}
+          disabled={finalTranscripts.length === 0 && !partialTranscript?.text}
           className="py-2 px-3 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-300 text-sm rounded-md transition cursor-pointer"
           title="Clear transcripts"
         >
@@ -219,28 +219,53 @@ function App() {
         </span>
       </div>
 
-      {/* Live Transcript Display Box */}
-      <div className="flex-1 bg-slate-950 border border-slate-800 rounded-md p-3 overflow-y-auto max-h-[230px] flex flex-col gap-2 select-text text-sm leading-relaxed">
-        {finalTranscripts.length === 0 && !partialTranscript && (
+      {/* Live Transcript Display Box with Speaker Diarization */}
+      <div className="flex-1 bg-slate-950/90 border border-slate-800 rounded-md p-3 overflow-y-auto max-h-[260px] flex flex-col gap-2.5 select-text text-xs leading-relaxed">
+        {finalTranscripts.length === 0 && !partialTranscript?.text && (
           <div className="m-auto text-center text-slate-500 text-xs py-8">
-            Click <strong>Start Live Transcription</strong> while in Google Meet. Both your voice and other participants will be transcribed here.
+            Click <strong>Start Live Transcription</strong> while in Google Meet. Both your voice and other participants will be transcribed with speaker identification.
           </div>
         )}
 
-        {finalTranscripts.map((turnText, index) => (
+        {finalTranscripts.map((turn) => (
           <div
-            key={index}
-            className="p-2 rounded bg-slate-900/90 border border-slate-800 text-slate-200 text-xs"
+            key={turn.id}
+            className={`p-2.5 rounded-lg border flex flex-col gap-1 transition-all ${
+              turn.isSelf
+                ? 'bg-blue-950/30 border-blue-800/60 self-end max-w-[90%]'
+                : 'bg-emerald-950/30 border-emerald-800/60 self-start max-w-[90%]'
+            }`}
           >
-            {turnText}
+            <div className="flex items-center justify-between gap-3 text-[11px] font-medium border-b border-white/5 pb-1">
+              <span className={`flex items-center gap-1 font-semibold ${turn.isSelf ? 'text-blue-300' : 'text-emerald-300'}`}>
+                <span>{turn.isSelf ? '🎙️' : '🔊'}</span>
+                <span>{turn.speaker}</span>
+              </span>
+              {turn.timestamp && (
+                <span className="text-[10px] text-slate-500 font-normal">{turn.timestamp}</span>
+              )}
+            </div>
+            <p className="text-slate-200 text-xs pt-0.5 leading-relaxed">{turn.text}</p>
           </div>
         ))}
 
         {/* Real-time partial transcript in-flight */}
-        {partialTranscript && (
-          <div className="p-2 rounded bg-blue-950/40 border border-blue-800/50 text-blue-200 text-xs italic flex items-start gap-1.5">
-            <span className="text-blue-400 font-bold not-italic">›</span>
-            <span>{partialTranscript}</span>
+        {partialTranscript?.text && (
+          <div
+            className={`p-2.5 rounded-lg border flex flex-col gap-1 animate-pulse ${
+              partialTranscript.isSelf
+                ? 'bg-blue-950/20 border-blue-700/50 self-end max-w-[90%]'
+                : 'bg-emerald-950/20 border-emerald-700/50 self-start max-w-[90%]'
+            }`}
+          >
+            <div className="flex items-center gap-1 text-[11px] font-semibold">
+              <span className={partialTranscript.isSelf ? 'text-blue-400' : 'text-emerald-400'}>
+                {partialTranscript.isSelf ? '🎙️ ' : '🔊 '}
+                {partialTranscript.speaker}
+              </span>
+              <span className="text-[10px] text-slate-400 font-normal italic">(speaking...)</span>
+            </div>
+            <p className="text-slate-300 text-xs italic">{partialTranscript.text}</p>
           </div>
         )}
       </div>

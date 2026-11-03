@@ -79,6 +79,7 @@ export default defineBackground(() => {
               streamId: message.streamId,
               token: message.token,
               initialTranscripts,
+              targetTabId: message.targetTabId,
             },
             (response: any) => {
               sendResponse(response || { success: true });
