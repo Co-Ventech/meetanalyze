@@ -7,7 +7,7 @@ export default defineConfig({
   manifest: {
     name: 'MeetAnalyze',
     description: 'Real-time meeting audio capture and transcription',
-    permissions: ['activeTab', 'tabs', 'tabCapture'],
+    permissions: ['activeTab', 'tabs', 'tabCapture', 'offscreen', 'storage', 'sidePanel'],
     host_permissions: [
       '*://meet.google.com/*',
       'https://meet.google.com/*',

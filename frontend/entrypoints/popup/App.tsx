@@ -42,12 +42,24 @@ function App() {
     }
   };
 
+  const openSidePanel = async () => {
+    try {
+      const [currentTab] = await browser.tabs.query({ active: true, currentWindow: true });
+      if (currentTab?.windowId && (browser as any).sidePanel?.open) {
+        await (browser as any).sidePanel.open({ windowId: currentTab.windowId });
+        window.close();
+      }
+    } catch (err) {
+      console.warn('[MeetAnalyze] Side panel open failed:', err);
+    }
+  };
+
   useEffect(() => {
     checkMeet();
   }, []);
 
   return (
-    <div className="w-[380px] p-4 bg-slate-900 text-white font-sans rounded-lg shadow-xl flex flex-col gap-3 min-h-[490px]">
+    <div className="w-full max-w-[420px] min-w-[340px] p-4 bg-slate-900 text-white font-sans rounded-lg shadow-xl flex flex-col gap-3 min-h-[490px]">
       {/* Header */}
       <div className="flex items-center justify-between border-b border-slate-800 pb-3">
         <div>
@@ -63,13 +75,23 @@ function App() {
             {meetStatus}
           </p>
         </div>
-        <button
-          onClick={checkMeet}
-          className="text-xs px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded transition cursor-pointer"
-          title="Re-check Google Meet tab"
-        >
-          Refresh
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={openSidePanel}
+            className="text-xs px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded transition cursor-pointer flex items-center gap-1"
+            title="Dock to Chrome Side Panel (keeps view open during meeting)"
+          >
+            <span>📌</span>
+            <span>Side Panel</span>
+          </button>
+          <button
+            onClick={checkMeet}
+            className="text-xs px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded transition cursor-pointer"
+            title="Re-check Google Meet tab"
+          >
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Permission Needed Alert */}
