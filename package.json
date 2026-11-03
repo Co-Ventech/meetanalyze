@@ -1,8 +1,8 @@
 {
-  "name": "meetlyst-monorepo",
+  "name": "meetanalyze-monorepo",
   "version": "0.1.0",
   "private": true,
-  "description": "MeetLyst - Full-stack Chrome Extension with Backend",
+  "description": "MeetAnalyze - Full-stack Chrome Extension with Backend",
   "workspaces": [
     "frontend",
     "backend"

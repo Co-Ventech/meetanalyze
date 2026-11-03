@@ -1,6 +1,6 @@
-export const MEETING_LINKS={
+export const MEETING_LINKS = {
     GOOGLE_MEET: {
-        URL: 'https://meet.google.com/*',
-        NAME: "Google Meet"
-    }
-}
+        URL: 'https://meet.google.com',
+        NAME: 'Google Meet',
+    },
+};

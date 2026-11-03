@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "assemblyai": {
+      "source": "AssemblyAI/assemblyai-skill",
+      "sourceType": "github",
+      "skillPath": "skills/assemblyai/SKILL.md",
+      "computedHash": "4d11138a94b0548d89b380adde76ee113798d6020f25674641f5abeb2f3d2ea3"
+    }
+  }
+}
