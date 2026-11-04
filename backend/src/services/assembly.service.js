@@ -1,13 +1,4 @@
-const dns = require('node:dns');
-
-// Prioritize IPv4 lookup to prevent macOS Happy Eyeballs getaddrinfo ENOTFOUND issues
-try {
-  if (typeof dns.setDefaultResultOrder === 'function') {
-    dns.setDefaultResultOrder('ipv4first');
-  }
-} catch (err) {
-  console.warn('[AssemblyAI] Could not set dns default result order:', err);
-}
+require('../utils/dns-resolver');
 
 /**
  * AssemblyAI Service
@@ -79,7 +70,7 @@ const generateSalesCallInsight = async (transcriptText) => {
     throw new Error('Transcript text is required to generate meeting insights.');
   }
 
-  // Gateway endpoints (Global / US, EU)
+  // Gateway endpoints (Global / US primary)
   const candidateGateways = [
     'https://llm-gateway.assemblyai.com/v1/chat/completions',
     'https://llm-gateway.eu.assemblyai.com/v1/chat/completions',
@@ -93,7 +84,7 @@ const generateSalesCallInsight = async (transcriptText) => {
     'gpt-4.1',
   ];
 
-  let lastError = null;
+  const attemptErrors = [];
 
   for (const gatewayUrl of candidateGateways) {
     for (const model of candidateModels) {
@@ -121,7 +112,7 @@ const generateSalesCallInsight = async (transcriptText) => {
 
         if (!response.ok) {
           const errText = await response.text();
-          throw new Error(`LLM Gateway ${model} on ${gatewayUrl} returned HTTP ${response.status}: ${errText}`);
+          throw new Error(`HTTP ${response.status}: ${errText}`);
         }
 
         const data = await response.json();
@@ -135,13 +126,16 @@ const generateSalesCallInsight = async (transcriptText) => {
           content: content.trim(),
         };
       } catch (err) {
-        lastError = err;
+        attemptErrors.push(`[${model} @ ${gatewayUrl}]: ${err.message}`);
         console.warn(`[AssemblyAI] LLM attempt with ${model} on ${gatewayUrl} failed (${err.message}). Trying next candidate...`);
       }
     }
   }
 
-  throw lastError || new Error('Failed to generate sales call insight on all LLM Gateway candidates');
+  const detailedSummary = attemptErrors.length > 0
+    ? attemptErrors.join('; ')
+    : 'No response received from any LLM Gateway candidate';
+  throw new Error(`Failed to generate sales call insight on all LLM Gateway candidates: ${detailedSummary}`);
 };
 
 module.exports = {

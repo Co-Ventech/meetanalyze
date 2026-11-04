@@ -1,9 +1,4 @@
-const dns = require('node:dns');
-try {
-  if (typeof dns.setDefaultResultOrder === 'function') {
-    dns.setDefaultResultOrder('ipv4first');
-  }
-} catch {}
+require('./src/utils/dns-resolver');
 
 const fastify = require('fastify')({
     logger: true
