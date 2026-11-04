@@ -136,3 +136,7 @@ Deliver a professional sales performance report suitable for management review a
 
 Prioritize accuracy over completeness. An honest assessment with limited findings is better than a detailed assessment containing unsupported conclusions.
 `;
+
+module.exports = {
+  SALES_PROMPT,
+};

@@ -19,6 +19,7 @@ backend/.env
 frontend/.env
 !.env.example
 !backend/.env.example
+!frontend/.env.example
 
 # WXT & Extension build outputs
 .output/

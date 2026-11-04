@@ -1,3 +1,10 @@
+const dns = require('node:dns');
+try {
+  if (typeof dns.setDefaultResultOrder === 'function') {
+    dns.setDefaultResultOrder('ipv4first');
+  }
+} catch {}
+
 const fastify = require('fastify')({
     logger: true
 })
