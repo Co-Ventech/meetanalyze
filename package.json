@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "description": "MeetAnalyze - Full-stack Chrome Extension with Backend",
+  "packageManager": "pnpm@9.15.5",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "workspaces": [
     "frontend",
     "backend"
