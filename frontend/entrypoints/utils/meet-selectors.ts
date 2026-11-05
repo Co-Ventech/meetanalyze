@@ -8,8 +8,8 @@ export const MEET_SELECTORS = {
   tiles: 'div[data-participant-id], div[data-initial-participant-id], div[data-allocation-id]',
   selfTile: 'div[data-requested-participant-id], div[data-participant-id]:has([aria-label*="(You)" i])',
 
-  // Participant name containers
-  nameElements: '.notranslate, [data-self-name], div.zWGUkf, [role="heading"][aria-level="3"]',
+  // Participant name containers (excluding icon font ligatures and hidden elements)
+  nameElements: 'div.zWGUkf, [data-self-name], span.notranslate:not(.google-material-icons):not(.material-icons):not(.material-symbols-outlined):not([aria-hidden="true"]), [role="heading"][aria-level="3"]',
 
   // Tile hover / action buttons with participant name in aria-label
   moreOptionsBtn: 'button[aria-label*="More options for" i]',
@@ -21,7 +21,7 @@ export const MEET_SELECTORS = {
   videoLabelElements: '[aria-label*="’s video" i], [aria-label*="\'s video" i], [aria-label*="’s screen" i], [aria-label*="\'s screen" i]',
 
   // People drawer list items (if panel is opened or rendered)
-  peopleListItems: '[role="listitem"] [data-self-name], [role="listitem"] .notranslate, div[data-participant-id] .notranslate',
+  peopleListItems: '[role="listitem"] div.zWGUkf, [role="listitem"] [data-self-name], [role="listitem"] span.notranslate:not(.google-material-icons):not(.material-icons):not([aria-hidden="true"])',
 
   // People counter button (e.g. "People (3)" or "Show everyone (3)")
   participantCountBtn: 'button[aria-label*="people" i], button[aria-label*="Show everyone" i], button[data-panel-id="1"]',
@@ -64,7 +64,7 @@ export const ACTIVE_SPEAKER_BORDER_COLORS = [
   '#4285f4',
 ];
 
-// UI strings that must never be mistaken for human names
+// UI strings and Material Icon ligatures that must never be mistaken for human names
 export const UI_BLACKLIST = [
   'turn on captions',
   'turn off captions',
@@ -90,11 +90,48 @@ export const UI_BLACKLIST = [
   'send a message',
   'show for everyone',
   'visual effects',
-  'settings',
   'apply visual effects',
+  'settings',
   'in-call messages',
   'info',
   'host controls',
   'more options for',
+  // Material Icon Ligatures
+  'devices',
+  'frame_person',
+  'visual_effects',
+  'more_vert',
+  'more_horiz',
+  'mic',
+  'mic_off',
+  'videocam',
+  'videocam_off',
+  'closed_caption',
+  'call_end',
+  'back_to_tab',
+  'pan_tool',
+  'auto_frame',
+  'present_to_all',
+  'volume_up',
+  'volume_off',
+  'screen_share',
+  'stop_screen_share',
+  'security',
+  'warning',
+  'error',
+  'check',
+  'close',
+  'fullscreen',
+  'fullscreen_exit',
+  'push_pin',
+  'chat_bubble',
+  'record_voice_over',
+  'hand_gesture',
+  'group',
+  'groups',
+  'person',
+  'person_add',
+  'open_in_new',
+  'content_copy',
 ];
 

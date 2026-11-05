@@ -27,6 +27,7 @@ let speakerInfo: SpeakerInfo = {
 let speakerIntervals: SpeakerInterval[] = [];
 let lastGuestSpeaker: string | null = null;
 let guestOverrides: Record<string, string> = {};
+let clusterToNameMap: Record<string, string> = {};
 let sessionAnnouncedJoins = new Set<string>();
 
 let currentSpeaker = {
@@ -135,8 +136,21 @@ function applySpeakerInfoUpdate(newInfo: Partial<SpeakerInfo>) {
         (turn.speaker === 'Client' || turn.speaker === 'Guest')
       ) {
         updatedAnyTurn = true;
+        if (turn.cluster) {
+          clusterToNameMap[turn.cluster] = targetSpeaker;
+        }
         const overridden = guestOverrides[targetSpeaker] || targetSpeaker;
         return { ...turn, speaker: overridden };
+      }
+
+      // Check if turn cluster was resolved
+      if (turn.cluster && clusterToNameMap[turn.cluster] && (turn.speaker === 'Client' || turn.speaker === 'Guest')) {
+        const resolved = clusterToNameMap[turn.cluster];
+        if (resolved) {
+          updatedAnyTurn = true;
+          const overridden = guestOverrides[resolved] || resolved;
+          return { ...turn, speaker: overridden };
+        }
       }
     }
     return turn;
@@ -265,6 +279,7 @@ async function startOffscreenRecording(
   isRecording = true;
   targetTabId = meetTabId || null;
   partialState = { speaker: 'You', isSelf: true, text: '' };
+  clusterToNameMap = {};
 
   // Establish initial participant baseline so existing attendees don't trigger "joined" tags
   sessionAnnouncedJoins.clear();
@@ -364,9 +379,9 @@ async function startOffscreenRecording(
   tabAnalyser = audioContext.createAnalyser();
   tabAnalyser.fftSize = 256;
 
-  // 4. Connect to AssemblyAI Streaming v3 WebSocket
+  // 4. Connect to AssemblyAI Streaming v3 WebSocket (with speaker diarization)
   const host = wsHost || 'streaming.assemblyai.com';
-  const wsUrl = `wss://${host}/v3/ws?token=${token}&sample_rate=${sampleRate}&speech_model=universal-3-6-pro`;
+  const wsUrl = `wss://${host}/v3/ws?token=${token}&sample_rate=${sampleRate}&speech_model=universal-3-6-pro&speaker_labels=true&speaker_labels_revision_interval_ms=300000`;
   socket = new WebSocket(wsUrl);
 
   socket.onopen = () => {
@@ -500,24 +515,49 @@ async function startOffscreenRecording(
       if (data.type === 'Turn') {
         const text = data.transcript || '';
         const isEndOfTurn = !!data.end_of_turn;
+        const cluster = data.speaker_label ? String(data.speaker_label) : null;
+        const turnOrder = typeof data.turn_order === 'number' ? data.turn_order : undefined;
 
         if (text.trim().length > 0) {
           const now = Date.now();
           let turnSpeaker = currentSpeaker.name;
 
-          // If it was labeled generic "Client" or "Guest", check if an overlapping speaker event resolved it
-          if (!currentSpeaker.isSelf && (turnSpeaker === 'Client' || turnSpeaker === 'Guest')) {
-            const resolved =
-              matchSpeakerFromIntervals(now - 2500, now) ||
-              (speakerInfo.activeSpeaker && speakerInfo.activeSpeaker.toLowerCase() !== 'you'
-                ? speakerInfo.activeSpeaker
-                : null) ||
-              (speakerInfo.guests.length === 1 ? speakerInfo.guests[0] : null) ||
-              lastGuestSpeaker;
-            if (resolved) {
-              turnSpeaker = guestOverrides[resolved] || resolved;
+          // For remote attendees (client tab audio), anchor AssemblyAI cluster to Google Meet name
+          if (!currentSpeaker.isSelf) {
+            if (cluster && clusterToNameMap[cluster]) {
+              turnSpeaker = clusterToNameMap[cluster];
+            } else {
+              // Anchor check against Google Meet DOM active speaker
+              const domSpeaker =
+                matchSpeakerFromIntervals(now - 2500, now) ||
+                (speakerInfo.activeSpeaker &&
+                 speakerInfo.activeSpeaker.toLowerCase() !== 'you' &&
+                 speakerInfo.activeSpeaker.toLowerCase() !== speakerInfo.selfName.toLowerCase()
+                  ? speakerInfo.activeSpeaker
+                  : null) ||
+                (speakerInfo.guests.length === 1 ? speakerInfo.guests[0] : null) ||
+                lastGuestSpeaker;
+
+              if (domSpeaker) {
+                turnSpeaker = domSpeaker;
+                if (cluster) {
+                  clusterToNameMap[cluster] = domSpeaker;
+                  // Retroactively upgrade past turns belonging to this cluster from 'Client'/'Guest'
+                  finalTranscripts.forEach((t) => {
+                    if (t.cluster === cluster && !t.isSelf && (t.speaker === 'Client' || t.speaker === 'Guest')) {
+                      t.speaker = guestOverrides[domSpeaker] || domSpeaker;
+                    }
+                  });
+                }
+              } else {
+                // Keep clean "Client" until identified
+                turnSpeaker = 'Client';
+              }
             }
           }
+
+          // Apply manual guest name override if configured
+          turnSpeaker = guestOverrides[turnSpeaker] || turnSpeaker;
 
           if (isEndOfTurn) {
             finalTranscripts.push({
@@ -528,6 +568,8 @@ async function startOffscreenRecording(
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               startMs: now - 3500,
               endMs: now,
+              cluster: currentSpeaker.isSelf ? undefined : (cluster || undefined),
+              turnOrder,
             });
 
             partialState = {
@@ -551,6 +593,32 @@ async function startOffscreenRecording(
             isFinal: isEndOfTurn,
             isTabAudioCaptured,
           });
+        }
+      } else if (data.type === 'SpeakerRevision') {
+        // AssemblyAI corrected earlier speaker turn assignments
+        if (Array.isArray(data.revisions) && data.revisions.length > 0) {
+          let anyRevised = false;
+          for (const rev of data.revisions) {
+            const targetTurn = finalTranscripts.find((t) => t.turnOrder === rev.turn_order);
+            if (targetTurn && !targetTurn.isSelf) {
+              const newCluster = rev.speaker_label ? String(rev.speaker_label) : null;
+              if (newCluster && targetTurn.cluster !== newCluster) {
+                targetTurn.cluster = newCluster;
+                const resolvedName = clusterToNameMap[newCluster] || 'Client';
+                targetTurn.speaker = guestOverrides[resolvedName] || resolvedName;
+                anyRevised = true;
+              }
+            }
+          }
+          if (anyRevised) {
+            chrome.runtime?.sendMessage?.({
+              type: 'TRANSCRIPT_UPDATE',
+              partialTranscript: partialState,
+              finalTranscripts: [...finalTranscripts],
+              isFinal: false,
+              isTabAudioCaptured,
+            }).catch(() => {});
+          }
         }
       } else if (data.type === 'Termination') {
         console.log('[Offscreen] AssemblyAI session terminated cleanly');
@@ -600,6 +668,7 @@ chrome.runtime.onMessage.addListener((message: any, _sender: any, sendResponse: 
   if (message.type === 'CLEAR_TRANSCRIPTS') {
     finalTranscripts = [];
     partialState = { speaker: 'You', isSelf: true, text: '' };
+    clusterToNameMap = {};
     sessionAnnouncedJoins.clear();
     if (speakerInfo?.guests) {
       for (const g of speakerInfo.guests) {
@@ -706,6 +775,11 @@ chrome.runtime.onMessage.addListener((message: any, _sender: any, sendResponse: 
     if (newName) {
       if (originalName) {
         guestOverrides[originalName] = newName;
+        for (const [cluster, mapped] of Object.entries(clusterToNameMap)) {
+          if (mapped === originalName) {
+            clusterToNameMap[cluster] = newName;
+          }
+        }
       } else if (speakerInfo.guests.length === 1 && speakerInfo.guests[0]) {
         guestOverrides[speakerInfo.guests[0]] = newName;
       } else if (lastGuestSpeaker) {

@@ -12,6 +12,9 @@ export default defineContentScript({
   main() {
     console.log('[MeetAnalyze] Google Meet Speaker Detection content script loaded.');
 
+    // Cache the detected real name of the local user so it persists across DOM shifts
+    let cachedSelfName = '';
+
     // Helper to sanitize extracted participant names
     const cleanName = (name: string): string => {
       if (!name) return '';
@@ -23,52 +26,110 @@ export default defineContentScript({
         .trim();
     };
 
-    // Ignore non-participant UI strings and icons
+    // Validate that a DOM element is a genuine participant name container, not an icon or action button
+    const isValidNameElement = (el: Element | null | undefined): boolean => {
+      if (!el) return false;
+
+      // Icon tags are never participant names
+      const tagName = el.tagName.toLowerCase();
+      if (tagName === 'i') return false;
+
+      // Hidden elements or icon markers are never participant names
+      if (el.getAttribute('aria-hidden') === 'true') return false;
+
+      // Participant names are never inside buttons
+      if (el.closest('button, [role="button"]') !== null) return false;
+
+      // Material Icon / Symbol font classes
+      const classList = typeof el.className === 'string' ? el.className.toLowerCase() : '';
+      if (
+        classList.includes('google-material-icons') ||
+        classList.includes('material-icons') ||
+        classList.includes('material-symbols')
+      ) {
+        return false;
+      }
+
+      if (el.closest('.google-material-icons, .material-icons, .material-symbols-outlined') !== null) {
+        return false;
+      }
+
+      return true;
+    };
+
+    // Ignore non-participant UI strings, icon ligatures, and buttons
     const isInvalidName = (str: string): boolean => {
       if (!str || str.length < 2 || str.length > 50) return true;
       const lower = str.toLowerCase().trim();
 
-      if (UI_BLACKLIST.some((b) => lower === b || lower.startsWith(`${b}:`))) {
-        return true;
-      }
+      // Material Icon ligatures in Google Meet are snake_case (e.g. frame_person, visual_effects, more_vert)
+      // Real human participant names never contain underscores
+      if (/_/.test(lower)) return true;
 
       // Filter out pure timestamps (e.g. "12:34 PM") or numbers
       if (/^\d{1,2}:\d{2}(\s*(?:am|pm))?$/i.test(lower)) return true;
       if (/^\d+$/.test(lower)) return true;
+
+      // Check blacklist
+      if (UI_BLACKLIST.some((b) => lower === b || lower.startsWith(`${b}:`))) {
+        return true;
+      }
 
       return false;
     };
 
     // 1. Detect the local user's real name
     function getSelfName(): string {
-      // Strategy A: Find elements explicitly containing "(You)"
-      const candidates = document.querySelectorAll(
-        `[data-self-name], ${MEET_SELECTORS.nameElements}, [aria-label*="(You)" i]`
-      );
-
-      for (const el of candidates) {
-        const text = el.textContent?.trim() || '';
-        const ariaLabel = el.getAttribute('aria-label') || '';
-
-        if (/\((?:You|you)\)/.test(text) || /\((?:You|you)\)/.test(ariaLabel)) {
-          const matched = text.match(/^(.+?)\s*\((?:You|you)\)/) || ariaLabel.match(/^(.+?)\s*\((?:You|you)\)/);
-          const rawName = matched ? matched[1] : (text || ariaLabel);
-          const cleaned = cleanName(rawName || '');
-          if (cleaned && !isInvalidName(cleaned)) {
+      // Strategy A: Direct [data-self-name] attribute (Google Meet's primary self indicator)
+      const selfEls = document.querySelectorAll('[data-self-name]');
+      for (const el of selfEls) {
+        const val = el.getAttribute('data-self-name')?.trim();
+        if (val && !isInvalidName(val)) {
+          const cleaned = cleanName(val);
+          if (cleaned && cleaned.toLowerCase() !== 'you') {
+            cachedSelfName = cleaned;
             return cleaned;
           }
         }
       }
 
-      // Strategy B: Check Google Account avatar button in top-right
+      // Strategy B: Tile with self requested ID or containing "(You)"
+      const candidates = document.querySelectorAll(
+        `[aria-label*="(You)" i], div[data-requested-participant-id]`
+      );
+
+      for (const el of candidates) {
+        const text = el.textContent?.trim() || '';
+        const ariaLabel = el.getAttribute('aria-label') || '';
+        const selfAttr = el.getAttribute('data-self-name') || '';
+
+        const source = selfAttr || (/\((?:You|you)\)/i.test(text) ? text : ariaLabel);
+        if (source) {
+          const matched = source.match(/^(.+?)\s*\((?:You|you)\)/i);
+          const rawName = matched ? matched[1] : source;
+          const cleaned = cleanName(rawName || '');
+          if (cleaned && !isInvalidName(cleaned) && cleaned.toLowerCase() !== 'you') {
+            cachedSelfName = cleaned;
+            return cleaned;
+          }
+        }
+      }
+
+      // Strategy C: Check Google Account avatar button in top-right
       const accountBtn = document.querySelector(MEET_SELECTORS.googleAccountBtn);
       const label = accountBtn?.getAttribute('aria-label') || '';
-      const match = label.match(/Google Account:\s*([^(\n]+)/i);
+      const match = label.match(/Google Account:\s*([^(\n\r]+)/i);
       if (match && match[1]) {
         const cleaned = cleanName(match[1]);
-        if (cleaned && !isInvalidName(cleaned)) {
+        if (cleaned && !isInvalidName(cleaned) && cleaned.toLowerCase() !== 'you') {
+          cachedSelfName = cleaned;
           return cleaned;
         }
+      }
+
+      // Fallback: If we had a previously detected real name, preserve it
+      if (cachedSelfName && cachedSelfName !== 'You') {
+        return cachedSelfName;
       }
 
       return MEET_SELECTORS.fallbackAgentLabel;
@@ -106,78 +167,134 @@ export default defineContentScript({
     function getParticipants(selfName: string): { all: string[]; guests: string[] } {
       const names = new Set<string>();
 
-      // Strategy A: [data-self-name] attributes on participant elements
+      // Build selfAliases to guarantee local user is excluded from guests
+      const selfAliases = new Set<string>([
+        'you',
+        'client',
+        selfName.toLowerCase(),
+      ]);
+      if (cachedSelfName) {
+        selfAliases.add(cachedSelfName.toLowerCase());
+      }
+
+      // Strategy A: [data-self-name] attributes represent the local user
       document.querySelectorAll('[data-self-name]').forEach((el) => {
-        const val = el.getAttribute('data-self-name');
-        if (val) {
+        const val = el.getAttribute('data-self-name')?.trim();
+        if (val && !isInvalidName(val)) {
           const cleaned = cleanName(val);
-          if (cleaned && !isInvalidName(cleaned)) {
-            names.add(cleaned);
+          if (cleaned && cleaned.toLowerCase() !== 'you') {
+            cachedSelfName = cleaned;
+            selfAliases.add(cleaned.toLowerCase());
           }
         }
       });
 
       // Strategy B: Video tiles
       document.querySelectorAll(MEET_SELECTORS.tiles).forEach((tile) => {
-        // Display name in .notranslate or [data-self-name]
-        const nameNode = tile.querySelector(MEET_SELECTORS.nameElements);
-        if (nameNode) {
-          const text = nameNode.textContent?.trim() || nameNode.getAttribute('data-self-name') || '';
-          const cleaned = cleanName(text);
-          if (cleaned && !isInvalidName(cleaned)) {
-            names.add(cleaned);
+        // Check if this tile belongs to the local user
+        const isSelfTile =
+          tile.hasAttribute('data-requested-participant-id') ||
+          tile.querySelector('[data-self-name]') !== null ||
+          tile.querySelector('[aria-label*="(You)" i]') !== null ||
+          (tile.getAttribute('aria-label') || '').toLowerCase().includes('(you)');
+
+        if (isSelfTile) {
+          // Extract and cache local user's name if available, but never add as guest
+          const selfNode = tile.querySelector('div.zWGUkf, [data-self-name], [role="heading"][aria-level="3"]');
+          const raw = selfNode?.getAttribute('data-self-name') || selfNode?.textContent?.trim() || '';
+          const cleaned = cleanName(raw);
+          if (cleaned && !isInvalidName(cleaned) && cleaned.toLowerCase() !== 'you') {
+            cachedSelfName = cleaned;
+            selfAliases.add(cleaned.toLowerCase());
+          }
+          return;
+        }
+
+        // Remote participant tile: find display name container
+        let tileName: string | null = null;
+
+        // Primary Google Meet name container
+        const nameNode = tile.querySelector('div.zWGUkf, [role="heading"][aria-level="3"]');
+        if (nameNode && isValidNameElement(nameNode)) {
+          const text = nameNode.textContent?.trim();
+          if (text && !isInvalidName(text)) {
+            tileName = text;
           }
         }
 
-        // Action buttons with participant name in aria-label
-        const moreOptionsBtn = tile.querySelector(MEET_SELECTORS.moreOptionsBtn);
-        if (moreOptionsBtn) {
-          const label = moreOptionsBtn.getAttribute('aria-label') || '';
-          const m = label.match(/More options for\s+(.+)$/i);
-          if (m && m[1]) {
-            const cleaned = cleanName(m[1]);
-            if (cleaned && !isInvalidName(cleaned)) names.add(cleaned);
+        // Secondary: non-icon span / div
+        if (!tileName) {
+          const spanNodes = tile.querySelectorAll('span.notranslate, div.notranslate');
+          for (const span of spanNodes) {
+            if (isValidNameElement(span)) {
+              const text = span.textContent?.trim();
+              if (text && !isInvalidName(text)) {
+                tileName = text;
+                break;
+              }
+            }
           }
         }
 
-        const pinBtn = tile.querySelector(MEET_SELECTORS.pinBtn);
-        if (pinBtn) {
-          const label = pinBtn.getAttribute('aria-label') || '';
-          const m = label.match(/Pin\s+([^to\n]+?)(?:\s+to\s+.*)?$/i);
-          if (m && m[1]) {
-            const cleaned = cleanName(m[1]);
-            if (cleaned && !isInvalidName(cleaned)) names.add(cleaned);
+        // Tertiary: Action buttons with participant name in aria-label
+        if (!tileName) {
+          const moreOptionsBtn = tile.querySelector(MEET_SELECTORS.moreOptionsBtn);
+          if (moreOptionsBtn) {
+            const label = moreOptionsBtn.getAttribute('aria-label') || '';
+            const m = label.match(/More options for\s+(.+)$/i);
+            if (m && m[1] && !isInvalidName(m[1])) {
+              tileName = m[1];
+            }
           }
         }
 
-        // Mute button aria-label
-        const muteBtn = tile.querySelector(MEET_SELECTORS.muteBtn);
-        if (muteBtn) {
-          const label = muteBtn.getAttribute('aria-label') || '';
-          const m = label.match(/Mute\s+(.+)$/i);
-          if (m && m[1]) {
-            const cleaned = cleanName(m[1]);
-            if (cleaned && !isInvalidName(cleaned)) names.add(cleaned);
+        if (!tileName) {
+          const pinBtn = tile.querySelector(MEET_SELECTORS.pinBtn);
+          if (pinBtn) {
+            const label = pinBtn.getAttribute('aria-label') || '';
+            const m = label.match(/Pin\s+([^to\n]+?)(?:\s+to\s+.*)?$/i);
+            if (m && m[1] && !isInvalidName(m[1])) {
+              tileName = m[1];
+            }
           }
         }
 
-        // Participant video label (e.g. "Arsalan's video")
-        const videoLabels = tile.querySelectorAll(MEET_SELECTORS.videoLabelElements);
-        videoLabels.forEach((el) => {
-          const label = el.getAttribute('aria-label') || '';
-          const m = label.match(/^(.+?)(?:'s|’s)\s+(?:video|screen)/i);
-          if (m && m[1]) {
-            const cleaned = cleanName(m[1]);
-            if (cleaned && !isInvalidName(cleaned)) names.add(cleaned);
+        if (!tileName) {
+          const muteBtn = tile.querySelector(MEET_SELECTORS.muteBtn);
+          if (muteBtn) {
+            const label = muteBtn.getAttribute('aria-label') || '';
+            const m = label.match(/Mute\s+(.+)$/i);
+            if (m && m[1] && !isInvalidName(m[1])) {
+              tileName = m[1];
+            }
           }
-        });
+        }
 
-        // Avatar alt attribute
-        const avatarImg = tile.querySelector(MEET_SELECTORS.avatarImg);
-        if (avatarImg) {
-          const alt = avatarImg.getAttribute('alt') || '';
-          const cleaned = cleanName(alt);
-          if (cleaned && !isInvalidName(cleaned) && !cleaned.toLowerCase().includes('avatar')) {
+        if (!tileName) {
+          const videoLabels = tile.querySelectorAll(MEET_SELECTORS.videoLabelElements);
+          for (const el of videoLabels) {
+            const label = el.getAttribute('aria-label') || '';
+            const m = label.match(/^(.+?)(?:'s|’s)\s+(?:video|screen)/i);
+            if (m && m[1] && !isInvalidName(m[1])) {
+              tileName = m[1];
+              break;
+            }
+          }
+        }
+
+        if (!tileName) {
+          const avatarImg = tile.querySelector(MEET_SELECTORS.avatarImg);
+          if (avatarImg) {
+            const alt = avatarImg.getAttribute('alt') || '';
+            if (alt && !isInvalidName(alt) && !alt.toLowerCase().includes('avatar')) {
+              tileName = alt;
+            }
+          }
+        }
+
+        if (tileName) {
+          const cleaned = cleanName(tileName);
+          if (cleaned && !isInvalidName(cleaned) && !selfAliases.has(cleaned.toLowerCase())) {
             names.add(cleaned);
           }
         }
@@ -185,10 +302,26 @@ export default defineContentScript({
 
       // Strategy C: People sidebar panel (if rendered in DOM)
       document.querySelectorAll(MEET_SELECTORS.peopleListItems).forEach((el) => {
-        const text = el.textContent?.trim() || el.getAttribute('data-self-name') || '';
+        if (!isValidNameElement(el)) return;
+
+        const isSelfItem =
+          el.hasAttribute('data-self-name') ||
+          el.closest('[data-self-name]') !== null ||
+          el.textContent?.includes('(You)') ||
+          (el.getAttribute('aria-label') || '').includes('(You)');
+
+        const text = el.getAttribute('data-self-name') || el.textContent?.trim() || '';
         const cleaned = cleanName(text);
+
         if (cleaned && !isInvalidName(cleaned)) {
-          names.add(cleaned);
+          if (isSelfItem) {
+            if (cleaned.toLowerCase() !== 'you') {
+              cachedSelfName = cleaned;
+              selfAliases.add(cleaned.toLowerCase());
+            }
+          } else if (!selfAliases.has(cleaned.toLowerCase())) {
+            names.add(cleaned);
+          }
         }
       });
 
@@ -203,7 +336,7 @@ export default defineContentScript({
           const m = text.match(pattern);
           if (m && m[1]) {
             const cleaned = cleanName(m[1]);
-            if (cleaned && !isInvalidName(cleaned)) {
+            if (cleaned && !isInvalidName(cleaned) && !selfAliases.has(cleaned.toLowerCase())) {
               processedToastNodes.add(el);
               names.add(cleaned);
               break;
@@ -226,10 +359,9 @@ export default defineContentScript({
       });
 
       const all = Array.from(names);
-      const normalizedSelf = selfName.toLowerCase();
       const guests = all.filter((n) => {
         const lower = n.toLowerCase();
-        return lower !== normalizedSelf && lower !== 'you';
+        return !selfAliases.has(lower) && !lower.endsWith('(you)');
       });
 
       return { all, guests };
@@ -243,10 +375,12 @@ export default defineContentScript({
         const speakerEls = captionContainer.querySelectorAll(MEET_SELECTORS.captionSpeakers);
         if (speakerEls.length > 0) {
           const latestSpeakerEl = speakerEls[speakerEls.length - 1];
-          const text = latestSpeakerEl?.textContent?.trim() || '';
-          const cleaned = cleanName(text);
-          if (cleaned && !isInvalidName(cleaned)) {
-            return cleaned;
+          if (isValidNameElement(latestSpeakerEl)) {
+            const text = latestSpeakerEl?.textContent?.trim() || '';
+            const cleaned = cleanName(text);
+            if (cleaned && !isInvalidName(cleaned)) {
+              return cleaned;
+            }
           }
         }
       }
@@ -267,11 +401,53 @@ export default defineContentScript({
         const isBlueBorder = ACTIVE_SPEAKER_BORDER_COLORS.some((color) => borderColor.includes(color));
 
         if (isSpeakingAria || isSpeakingClass || isBlueBorder) {
-          const nameNode = tile.querySelector(MEET_SELECTORS.nameElements);
-          const raw = nameNode?.textContent?.trim() || nameNode?.getAttribute('data-self-name') || '';
-          const cleaned = cleanName(raw);
-          if (cleaned && !isInvalidName(cleaned)) {
-            return cleaned;
+          // If this is the self tile, the active speaker is self
+          const isSelfTile =
+            tile.hasAttribute('data-requested-participant-id') ||
+            tile.querySelector('[data-self-name]') !== null ||
+            tile.querySelector('[aria-label*="(You)" i]') !== null ||
+            (tile.getAttribute('aria-label') || '').toLowerCase().includes('(you)');
+
+          if (isSelfTile) {
+            return selfName;
+          }
+
+          // Remote tile: extract name safely
+          let speakerName: string | null = null;
+          const nameNode = tile.querySelector('div.zWGUkf, [role="heading"][aria-level="3"]');
+          if (nameNode && isValidNameElement(nameNode)) {
+            speakerName = nameNode.textContent?.trim() || null;
+          }
+
+          if (!speakerName) {
+            const spanNodes = tile.querySelectorAll('span.notranslate, div.notranslate');
+            for (const span of spanNodes) {
+              if (isValidNameElement(span)) {
+                const text = span.textContent?.trim();
+                if (text && !isInvalidName(text)) {
+                  speakerName = text;
+                  break;
+                }
+              }
+            }
+          }
+
+          if (!speakerName) {
+            const moreOptionsBtn = tile.querySelector(MEET_SELECTORS.moreOptionsBtn);
+            if (moreOptionsBtn) {
+              const label = moreOptionsBtn.getAttribute('aria-label') || '';
+              const m = label.match(/More options for\s+(.+)$/i);
+              if (m && m[1] && !isInvalidName(m[1])) {
+                speakerName = m[1];
+              }
+            }
+          }
+
+          if (speakerName) {
+            const cleaned = cleanName(speakerName);
+            if (cleaned && !isInvalidName(cleaned)) {
+              return cleaned;
+            }
           }
         }
       }
@@ -345,10 +521,31 @@ export default defineContentScript({
       const newlyJoined: string[] = [];
       const leftParticipants: string[] = [];
 
+      // Build selfAliases to ensure local user & invalid names are continuously purged from knownGuests
+      const selfAliases = new Set<string>([
+        'you',
+        'client',
+        selfName.toLowerCase(),
+      ]);
+      if (cachedSelfName) {
+        selfAliases.add(cachedSelfName.toLowerCase());
+      }
+
+      // Continuously purge any invalid names, Material Icon ligatures, or self names from knownGuests
+      for (const known of Array.from(knownGuests)) {
+        if (isInvalidName(known) || selfAliases.has(known.toLowerCase()) || known.toLowerCase().endsWith('(you)')) {
+          knownGuests.delete(known);
+          lastSeenTimestamp.delete(known);
+          announcedJoins.delete(known);
+        }
+      }
+
       // 1. Mark observed guests as seen right now and add to knownGuests
       for (const guest of scannedGuests) {
-        lastSeenTimestamp.set(guest, now);
-        knownGuests.add(guest);
+        if (!isInvalidName(guest) && !selfAliases.has(guest.toLowerCase())) {
+          lastSeenTimestamp.set(guest, now);
+          knownGuests.add(guest);
+        }
       }
 
       // 2. Establish initial session baseline without firing "joined" tags for pre-existing attendees

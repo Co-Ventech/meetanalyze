@@ -38,7 +38,14 @@ Implemented in [`frontend/entrypoints/content.ts`](file:///Users/aahil/Desktop/m
 - **Strategy B (Video Tiles)**: Inspects participant tiles (`div[data-participant-id]`), reading `.notranslate`, tile action buttons (`aria-label="More options for <Name>"`), pin buttons (`aria-label="Pin <Name> to screen"`), mute buttons (`aria-label="Mute <Name>"`), and video elements (`aria-label="<Name>'s video"`).
 - **Strategy C (People Drawer)**: Reads rendered items in Google Meet's people list (`[role="listitem"]`).
 - **Strategy D (Toast Alerts)**: Extracts names from join/leave notification toasts.
-- **Blacklisting**: Filters out UI strings (e.g. `"Turn on captions"`, `"Raise hand"`, timestamps, pure numbers).
+- **Material Icon Ligature & Element Filtering**:
+  - Validates elements using `isValidNameElement()` to reject icon tags (`<i>`), `aria-hidden="true"`, action buttons (`button`), and Material Symbol font classes (`google-material-icons`, `material-icons`, `material-symbols`).
+  - Rejects snake_case ligatures containing underscores (`/_/.test(lower)`, e.g. `frame_person`, `visual_effects`, `more_vert`).
+  - Strict UI blacklist matching (`UI_BLACKLIST`) containing all Meet action strings and icon identifiers.
+- **Local User Self Name Resolution**:
+  - Directly queries `[data-self-name]` attribute and caches the resolved human name in `cachedSelfName`.
+  - Self tiles (`[data-requested-participant-id]`, `[data-self-name]`, `(You)`) update `cachedSelfName` and are excluded from guest participant lists.
+  - Dynamically constructs `selfAliases` (`'you'`, `'client'`, `selfName`, `cachedSelfName`) and continuously purges matching entries from `guests` and `knownGuests`.
 
 ### 2.3 Real-Time Active Speaker Detection
 - **Closed Captions Priority**: If Meet captions are active, reads the latest speaker tag (`.NWpY1d`, `.zs7s8d`).
@@ -81,10 +88,25 @@ In a meeting with multiple clients, speech arrives on the tab stream before the 
                      └── NO  ──► Assign generic "Client"
 ```
 
-### Retroactive Turn Correction
+### 3.1 Hybrid Anchor Diarization (AssemblyAI + Meet DOM)
+In addition to audio RMS separation for the local microphone, the offscreen processor enables AssemblyAI's native streaming diarization (`speaker_labels=true&speaker_labels_revision_interval_ms=300000`).
+
+1. **Acoustic Clusters**:
+   - AssemblyAI labels remote utterances with acoustic cluster identifiers (`speaker_label: "A"`, `"B"`, `"C"`).
+2. **Anchor Binding to Google Meet Names**:
+   - On the first occurrence of a cluster (e.g. `"A"`), the system checks the Google Meet DOM active speaker indicators (`speakerInfo.activeSpeaker`, recent intervals, or 1-on-1 guest fallback).
+   - Once a match is confirmed, the mapping is saved in `clusterToNameMap["A"] = "Arsalan"`.
+   - All subsequent utterances tagged with `"A"` automatically resolve to `"Arsalan"` even if the participant mutes video, hides their tile, or minimizes the window.
+3. **Clean Fallback Policy**:
+   - If a cluster is not yet anchored to a human name, it displays cleanly as `"Client"` in the UI (never exposing technical tags like `"Speaker A"`).
+4. **SpeakerRevision Processing**:
+   - When AssemblyAI emits a `SpeakerRevision` event, the system locates previous turns by `turnOrder` and updates their cluster and speaker assignments accordingly.
+
+### 3.2 Retroactive Turn Correction
 Whenever an active speaker event is confirmed by the content script:
 - Offscreen inspects all finalized turns from the last **6 seconds**.
 - If a turn was temporarily assigned `'Client'` or `'Guest'`, and an interval now confirms who spoke during that time window, the turn is **retroactively updated** with the true human name and broadcast to the UI.
+- Any cluster mapping discovered is immediately back-propagated to earlier turns sharing that acoustic cluster.
 
 ---
 

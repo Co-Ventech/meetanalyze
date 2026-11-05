@@ -7,6 +7,8 @@ export interface TranscriptTurn {
   startMs?: number;
   endMs?: number;
   systemNotice?: boolean; // true for join/leave or call status notices
+  cluster?: string;       // AssemblyAI acoustic cluster e.g. "A", "B"
+  turnOrder?: number;     // AssemblyAI turn_order for SpeakerRevision mapping
 }
 
 export interface PartialTranscriptState {

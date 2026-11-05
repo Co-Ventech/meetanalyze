@@ -105,3 +105,37 @@
 - **Consequences**:
   - When Google modifies Meet's layout, maintenance is isolated to updating a single configuration file without touching core detection or diarization code.
 
+---
+
+## ADR-009: Hybrid Anchor Diarization with AssemblyAI speaker_labels & Google Meet DOM
+
+- **Context**: AssemblyAI streaming diarization (`speaker_labels=true`) outputs acoustic cluster identifiers (`Speaker A`, `Speaker B`) but cannot know human names. Conversely, Google Meet DOM visual active speaker indicators can fail if video tiles are hidden, minimized, or scrolled out of view.
+- **Decision**:
+  - Implement a **Hybrid Anchor** pattern:
+    1. Separate the Support Agent microphone stream via Web Audio RMS analysis (always guaranteed as `"You"`).
+    2. Route remote attendee audio to AssemblyAI Streaming v3 with `speaker_labels=true&speaker_labels_revision_interval_ms=300000`.
+    3. On first observation of a cluster (e.g. `"A"`), anchor it to the attendee currently active in the Meet DOM.
+    4. Maintain `clusterToNameMap` in memory so subsequent turns by that cluster automatically resolve to the real name without requiring continuous visual speaking borders.
+    5. Handle `SpeakerRevision` events to retroactively re-attribute previous turns if AssemblyAI refines its voice model.
+    6. Display fallback client turns as clean `"Client"` rather than exposing raw technical tags (`"Speaker A"`) in the UI.
+- **Consequences**:
+  - Combines the acoustic voice stability of AssemblyAI with real human identity from Google Meet's DOM.
+  - Minimizes DOM scraping dependency: once a voice is anchored, name attribution persists even if Meet UI tiles are hidden.
+  - Follows KISS and YAGNI: implemented in <60 lines across offscreen processor and types without altering backend or database.
+
+---
+
+## ADR-010: Multi-Tiered Filtering for Google Meet Material Icon Ligatures and Local User Self-Name Isolation
+
+- **Context**: In Google Meet, UI buttons (visual effects, framing, settings, more options) use Material Icons font ligatures rendered inside `.notranslate` spans (e.g. `frame_person`, `visual_effects`, `more_vert`, `devices`). The participant scraper erroneously matched these icon tags as participant names. Additionally, the local user's real name (from `[data-self-name="<Name>"]`) was treated as a guest because `getSelfName()` expected `(You)` in the text/aria-label and fell back to `'You'`.
+- **Decision**:
+  - Implement a 4-tier filtering and isolation defense:
+    1. **Element-level validation** (`isValidNameElement`): Rejects elements that are `<i>` tags, have `aria-hidden="true"`, reside inside buttons (`el.closest('button')`), or carry Material Icon classes (`.google-material-icons`, `.material-icons`, `.material-symbols`).
+    2. **String-level validation** (`isInvalidName`): Rejects snake_case ligatures containing underscores (`/_/.test(lower)`) and matches against an expanded `UI_BLACKLIST`.
+    3. **Direct self-name extraction**: In `getSelfName()`, directly query `[data-self-name]` attribute and cache the resolved human name in `cachedSelfName`.
+    4. **Self tile and alias exclusion**: Skip self tiles (`data-requested-participant-id`, `[data-self-name]`, `(You)`) from guest discovery. Maintain `selfAliases` (`'you'`, `'client'`, `selfName`, `cachedSelfName`) to ensure the user's real name is never added to or retained in `guests` or `knownGuests`.
+- **Consequences**:
+  - Completely cleans up the Call Participants roster: only genuine human participants are shown.
+  - The local user is cleanly displayed as `<Name> (You)` (or `You`) in the local mic chip, never duplicated in guest chips.
+  - Eliminates bogus icon names from being tagged onto transcript turns or active speaker logs.
+
