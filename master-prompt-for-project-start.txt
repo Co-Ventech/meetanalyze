@@ -1,0 +1,137 @@
+# Task: Build a Persistent Project Context and Knowledge System
+
+Act as a Senior Software Architect and AI Knowledge Management Engineer.
+
+Your task is to thoroughly understand the current project and establish a persistent, structured project knowledge system so that future Antigravity conversations can continue development without repeatedly rediscovering the entire codebase.
+
+## 1. Initial Project Audit
+
+Analyze the existing repository systematically.
+
+Identify and document:
+
+- Project purpose and business requirements.
+- Complete technology stack and dependencies.
+- Project directory structure and important files.
+- Application architecture and module responsibilities.
+- Frontend architecture, components, screens, and navigation.
+- Backend architecture, services, controllers, and APIs.
+- Database schema, relationships, indexes, and constraints.
+- Authentication and authorization mechanisms.
+- Third-party integrations and external services.
+- Environment variable names and their purposes (NEVER store actual secrets).
+- Important business logic and application workflows.
+- State management and data-fetching strategies.
+- Build, deployment, and development workflows.
+- Current implementation status.
+- Known bugs, technical debt, and unresolved issues.
+- Important technical decisions and their reasoning.
+
+Do not assume anything. Verify findings against actual source code, configuration files, migrations, and existing documentation.
+
+## 2. Create Persistent Context Files
+
+Create a dedicated `docs/ai-context/` directory.
+
+Organize the knowledge into focused Markdown files:
+
+- `PROJECT_OVERVIEW.md`
+- `ARCHITECTURE.md`
+- `TECH_STACK.md`
+- `DATABASE_SCHEMA.md`
+- `API_DOCUMENTATION.md`
+- `BUSINESS_LOGIC.md`
+- `IMPLEMENTATION_STATUS.md`
+- `KNOWN_ISSUES.md`
+- `DECISIONS.md`
+
+Also create or update the root `GEMINI.md`.
+
+The root `GEMINI.md` must act as the entry point to the project knowledge system.
+
+It must instruct future AI conversations to:
+
+1. Read the project overview before starting work.
+2. Consult only the relevant context documents for the requested task.
+3. Inspect specific source files when implementation details need verification.
+4. Never unnecessarily scan the entire repository again.
+5. Treat actual source code as the source of truth when documentation conflicts with implementation.
+
+Keep the context documentation concise, structured, and easy to navigate.
+
+## 3. Preserve Project Knowledge
+
+Document the following carefully:
+
+- Existing implementation decisions.
+- Why particular technologies or libraries were selected.
+- Existing patterns and conventions.
+- Important dependencies between modules.
+- Features that are complete, partially implemented, or pending.
+- Previous bugs and their confirmed solutions.
+- Approaches that were attempted but failed.
+- Important constraints that must not be violated.
+
+Do not invent missing information. Explicitly label uncertain or unverified information.
+
+## 4. Automatic Context Maintenance
+
+Establish the following permanent instructions in `GEMINI.md`:
+
+Whenever you implement a feature, fix a bug, modify architecture, change database structures, add dependencies, or alter application behavior:
+
+1. Update the relevant context documents.
+2. Update implementation status where necessary.
+3. Record important architectural decisions in `DECISIONS.md`.
+4. Record newly discovered issues in `KNOWN_ISSUES.md`.
+5. Remove or correct outdated documentation.
+6. Keep the project overview and context index synchronized.
+
+Do not update documentation with assumptions. Only record changes verified in the codebase.
+
+## 5. Future Conversation Protocol
+
+At the beginning of every new conversation:
+
+1. Read `GEMINI.md`.
+2. Read `PROJECT_OVERVIEW.md`.
+3. Identify the context documents relevant to the requested task.
+4. Review the current Git status and relevant recent changes when necessary.
+5. Inspect only the source files related to the task.
+6. Continue from the existing implementation rather than rebuilding or rediscovering it.
+
+Do not perform a full repository audit unless:
+- I explicitly request it.
+- The project architecture has significantly changed.
+- Existing documentation is missing or demonstrably outdated.
+- The task genuinely requires repository-wide analysis.
+
+## 6. Accuracy and Safety Rules
+
+- Never fabricate implementation details.
+- Never assume a feature exists just because it is documented.
+- Never overwrite working implementations without understanding their dependencies.
+- Never introduce unnecessary libraries or architectural changes.
+- Never expose, copy, or document API keys, passwords, tokens, private keys, or other secrets.
+- Preserve existing coding conventions.
+- Prefer minimal, targeted changes.
+- Clearly distinguish verified facts from assumptions.
+
+## 7. Final Verification
+
+After creating the knowledge system:
+
+- Verify every context document against the actual project.
+- Check for contradictions and outdated information.
+- Verify that `GEMINI.md` correctly references the context documents.
+- Ensure important project knowledge has not been omitted.
+- Confirm that future conversations have clear instructions for retrieving relevant context.
+
+Finally, provide a summary of:
+1. Files created or updated.
+2. Project architecture understood.
+3. Important implementation details captured.
+4. Unresolved questions or areas that require my input.
+5. Any project areas that could not be fully verified.
+
+IMPORTANT: Do not merely summarize the project in this conversation. Actually create and maintain the persistent Markdown files inside the repository.
