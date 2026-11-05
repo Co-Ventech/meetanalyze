@@ -48,6 +48,16 @@ const summarizeTranscriptController = async (req, res) => {
             });
         }
 
+        // Validate that the transcript is strictly in English
+        const nonLatinMatches = transcriptText.match(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u0900-\u097F\u0400-\u04FF\u4E00-\u9FFF\u3400-\u4DBF\u3040-\u309F\u30A0-\u30FF\uAC00-\uD7AF\u0590-\u05FF\u0E00-\u0E7F\u0370-\u03FF]/g) || [];
+        const latinMatches = transcriptText.match(/[a-zA-Z]/g) || [];
+        if (nonLatinMatches.length > 0 && nonLatinMatches.length >= latinMatches.length * 0.3) {
+            return res.status(400).send({
+                success: false,
+                message: 'Only English transcripts are accepted for meeting insight evaluation.',
+            });
+        }
+
         // Generate sales performance insight using AssemblyAI LLM Gateway and the SALES_PROMPT
         const insightResult = await generateSalesCallInsight(transcriptText);
 

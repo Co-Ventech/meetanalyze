@@ -269,6 +269,14 @@ function App() {
               : 'Off'}
           </span>
         </div>
+
+        <div
+          className="flex items-center justify-center gap-1 py-1 px-2 rounded border bg-slate-950 border-slate-800 text-slate-400 text-[10px]"
+          title="Live transcription restricted to English only"
+        >
+          <span>🌐</span>
+          <span>EN</span>
+        </div>
       </div>
 
       {/* Dynamic New Joiner Banner */}

@@ -67,6 +67,26 @@ function floatTo16BitPCM(input: Float32Array): ArrayBuffer {
   return buffer;
 }
 
+// Helper to verify that text is in the English / Latin alphabet
+// Rejects foreign alphabets (Arabic, Urdu, Cyrillic, Devanagari, CJK, Hebrew, etc.)
+function isEnglishTranscript(text: string): boolean {
+  if (!text || !text.trim()) return false;
+
+  // Reject text containing non-Latin scripts:
+  // Arabic/Urdu, Devanagari/Hindi, Cyrillic/Russian, CJK, Japanese, Korean, Hebrew, Thai, Greek
+  const nonLatinRegex = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u0900-\u097F\u0400-\u04FF\u4E00-\u9FFF\u3400-\u4DBF\u3040-\u309F\u30A0-\u30FF\uAC00-\uD7AF\u0590-\u05FF\u0E00-\u0E7F\u0370-\u03FF]/;
+  if (nonLatinRegex.test(text)) {
+    return false;
+  }
+
+  // Must contain alphanumeric characters
+  if (!/[a-zA-Z0-9]/.test(text)) {
+    return false;
+  }
+
+  return true;
+}
+
 // Find speaker from Google Meet active speaker intervals that overlaps a given time window
 function matchSpeakerFromIntervals(windowStart: number, windowEnd: number): string | null {
   if (!speakerIntervals || speakerIntervals.length === 0) return null;
@@ -379,9 +399,10 @@ async function startOffscreenRecording(
   tabAnalyser = audioContext.createAnalyser();
   tabAnalyser.fftSize = 256;
 
-  // 4. Connect to AssemblyAI Streaming v3 WebSocket (with speaker diarization)
+  // 4. Connect to AssemblyAI Streaming v3 WebSocket (with speaker diarization & English-only steering)
   const host = wsHost || 'streaming.assemblyai.com';
-  const wsUrl = `wss://${host}/v3/ws?token=${token}&sample_rate=${sampleRate}&speech_model=universal-3-6-pro&speaker_labels=true&speaker_labels_revision_interval_ms=300000`;
+  const encodedLangCodes = encodeURIComponent(JSON.stringify(['en']));
+  const wsUrl = `wss://${host}/v3/ws?token=${token}&sample_rate=${sampleRate}&speech_model=universal-3-6-pro&speaker_labels=true&speaker_labels_revision_interval_ms=300000&language_codes=${encodedLangCodes}&language_code=en&language_detection=true`;
   socket = new WebSocket(wsUrl);
 
   socket.onopen = () => {
@@ -517,8 +538,31 @@ async function startOffscreenRecording(
         const isEndOfTurn = !!data.end_of_turn;
         const cluster = data.speaker_label ? String(data.speaker_label) : null;
         const turnOrder = typeof data.turn_order === 'number' ? data.turn_order : undefined;
+        const detectedLang = data.language_code ? String(data.language_code).toLowerCase() : null;
 
         if (text.trim().length > 0) {
+          // Strict English-Only Enforcement:
+          // 1. If AssemblyAI detects a non-English language (e.g. 'es', 'fr', 'de', 'ur', 'hi'), reject it.
+          // 2. If the text contains non-Latin scripts (e.g. Arabic, Devanagari, Cyrillic, CJK, Hebrew), reject it.
+          if ((detectedLang && detectedLang !== 'en') || !isEnglishTranscript(text)) {
+            console.log(`[Offscreen] Dropped non-English turn (lang=${detectedLang || 'non-Latin'}): "${text}"`);
+            if (!isEndOfTurn) {
+              partialState = {
+                speaker: currentSpeaker.name,
+                isSelf: currentSpeaker.isSelf,
+                text: '',
+              };
+              chrome.runtime?.sendMessage?.({
+                type: 'TRANSCRIPT_UPDATE',
+                partialTranscript: null,
+                finalTranscripts: [...finalTranscripts],
+                isFinal: false,
+                isTabAudioCaptured,
+              }).catch(() => { });
+            }
+            return;
+          }
+
           const now = Date.now();
           let turnSpeaker = currentSpeaker.name;
 

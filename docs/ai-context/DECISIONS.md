@@ -139,3 +139,22 @@
   - The local user is cleanly displayed as `<Name> (You)` (or `You`) in the local mic chip, never duplicated in guest chips.
   - Eliminates bogus icon names from being tagged onto transcript turns or active speaker logs.
 
+---
+
+## ADR-011: Strict English-Only Transcription and Evaluation Enforcement
+
+- **Context**: By default, AssemblyAI's `universal-3-6-pro` model natively code-switches across 32 languages. Ambient audio, foreign speech, or non-English conversation produced foreign script or non-English turns in the meeting transcript. Furthermore, the meeting insight report generator needed to guarantee English-only analysis.
+- **Decision**:
+  - Enforce a 3-tier English-only pipeline across STT, filtering, and LLM evaluation:
+    1. **Streaming Model Steering**: Pass `language_codes=["en"]`, `language_code=en`, and `language_detection=true` in the WebSocket connection URL to steer AssemblyAI's token distribution specifically toward English.
+    2. **Real-Time Client-Side Turn Filtering**: In `offscreen/main.ts`:
+       - Discard turns if AssemblyAI's detected language is not `'en'`.
+       - Validate transcript text using `isEnglishTranscript()` to reject non-Latin scripts (Arabic, Urdu, Devanagari, Cyrillic, CJK, Hebrew, etc.).
+       - Clear partials and drop finals so non-English utterances never reach the UI or transcripts array.
+    3. **Backend API Validation & LLM Guardrail**:
+       - In `/api/v1/summarize`, validate that transcripts are in English (reject foreign script submissions with HTTP 400).
+       - In `SALES_PROMPT`, include strict instruction `H. English Language Requirement` requiring all reports and recommendations to be delivered exclusively in English.
+- **Consequences**:
+  - 100% deterministic English transcription across both local microphone and remote Google Meet participants.
+  - Prevents non-English text from corrupting sales analysis and scorecards.
+

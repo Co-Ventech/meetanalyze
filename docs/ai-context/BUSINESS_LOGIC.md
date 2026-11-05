@@ -108,6 +108,17 @@ Whenever an active speaker event is confirmed by the content script:
 - If a turn was temporarily assigned `'Client'` or `'Guest'`, and an interval now confirms who spoke during that time window, the turn is **retroactively updated** with the true human name and broadcast to the UI.
 - Any cluster mapping discovered is immediately back-propagated to earlier turns sharing that acoustic cluster.
 
+### 3.3 Strict English-Only Transcription Enforcement
+The application exclusively transcribes and analyzes English-language meetings:
+1. **Model Steering**: Connects to AssemblyAI Streaming v3 with `language_codes=["en"]`, `language_code=en`, and `language_detection=true`. This strongly biases the underlying acoustic model toward English token generation.
+2. **In-Flight Turn Language Verification**:
+   - If AssemblyAI detects a non-English language (`data.language_code !== 'en'`), the turn is immediately discarded.
+   - Text is verified using `isEnglishTranscript()` to reject foreign alphabets (Arabic, Urdu, Devanagari, Cyrillic, CJK, Hebrew, etc.).
+   - Discarded non-English turns are excluded from both the real-time UI partials and `finalTranscripts`.
+3. **Backend Insight Enforcement**:
+   - The `/api/v1/summarize` endpoint rejects non-English submissions with an HTTP 400 error.
+   - `SALES_PROMPT` enforces strict English-only evaluation reports and refuses evaluations on foreign-language transcripts.
+
 ---
 
 ## 4. Participant Join & Leave Deduplication
@@ -150,6 +161,17 @@ Located in [`backend/src/constants/prompt.js`](file:///Users/aahil/Desktop/meetl
    - Evidence-based only (no hallucinated quotations or client emotions).
    - Context-aware scoring (acknowledging call stage and client responsiveness).
    - Constructive tone (critiquing behaviors, not personalities).
+
+### 3.3 Strict English-Only Transcription Enforcement
+The application exclusively transcribes and analyzes English-language meetings:
+1. **Model Steering**: Connects to AssemblyAI Streaming v3 with `language_codes=["en"]`, `language_code=en`, and `language_detection=true`. This strongly biases the underlying acoustic model toward English token generation.
+2. **In-Flight Turn Language Verification**:
+   - If AssemblyAI detects a non-English language (`data.language_code !== 'en'`), the turn is immediately discarded.
+   - Text is verified using `isEnglishTranscript()` to reject foreign alphabets (Arabic, Urdu, Devanagari, Cyrillic, CJK, Hebrew, etc.).
+   - Discarded non-English turns are excluded from both the real-time UI partials and `finalTranscripts`.
+3. **Backend Insight Enforcement**:
+   - The `/api/v1/summarize` endpoint rejects non-English submissions with an HTTP 400 error.
+   - `SALES_PROMPT` enforces strict English-only evaluation reports and refuses evaluations on foreign-language transcripts.
 
 ---
 
