@@ -8,8 +8,9 @@
 | **Chrome Extension Framework (WXT MV3)** | **Complete** | Verified (`wxt build` -> `.output/chrome-mv3`) | `frontend/wxt.config.ts`, `frontend/package.json` |
 | **Offscreen Document Lifecycle** | **Complete** | Verified | `frontend/entrypoints/background.ts`, `offscreen/` |
 | **Dual-Stream Audio Mixing (Mic + Tab)** | **Complete** | Verified | `frontend/entrypoints/offscreen/main.ts` |
-| **AssemblyAI Real-Time STT (Universal-3.6 Pro)**| **Complete** | Verified | `frontend/entrypoints/offscreen/main.ts` |
-| **Google Meet Attendee & Self Discovery** | **Complete** | Verified | `frontend/entrypoints/content.ts`, `meet-selectors.ts` |
+| **AssemblyAI Real-Time STT (Universal-3.6 Pro)**| **Complete** | Verified (Strict English-only steering & filter) | `frontend/entrypoints/offscreen/main.ts` |
+| **Hybrid Anchor Diarization (speaker_labels)** | **Complete** | Verified (Cluster mapping + revisions) | `frontend/entrypoints/offscreen/main.ts` |
+| **Google Meet Attendee & Self Discovery** | **Complete** | Verified (Icon font & self-name filtering hardened) | `frontend/entrypoints/content.ts`, `meet-selectors.ts` |
 | **Active Speaker Detection & Timeline** | **Complete** | Verified | `frontend/entrypoints/content.ts` |
 | **Retroactive Turn Correction (6s window)** | **Complete** | Verified | `frontend/entrypoints/offscreen/main.ts` |
 | **Join/Leave Notifications & Deduplication** | **Complete** | Verified | `frontend/entrypoints/content.ts`, `offscreen/main.ts` |

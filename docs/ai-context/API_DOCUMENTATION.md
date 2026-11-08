@@ -176,6 +176,9 @@ Accepts either an array of turn objects or a pre-formatted string:
 }
 ```
 
+#### Language Requirement
+- The endpoint strictly accepts English transcripts. Submissions containing predominantly foreign scripts (Arabic, Cyrillic, Devanagari, CJK, etc.) return HTTP 400 (`"Only English transcripts are accepted for meeting insight evaluation."`).
+
 #### Response Headers
 ```http
 Content-Type: application/msword
@@ -214,6 +217,11 @@ The extension's offscreen document connects directly to AssemblyAI's streaming W
   - `token`: Ephemeral token from `/api/v1/transcription/token`.
   - `sample_rate`: Sample rate matching browser `AudioContext.sampleRate` (e.g. `16000`, `44100`, or `48000`).
   - `speech_model`: `universal-3-6-pro` (flagship streaming model supporting 32 languages, native code-switching, and live punctuate).
+  - `speaker_labels`: `true` (enables real-time acoustic speaker diarization).
+  - `speaker_labels_revision_interval_ms`: `300000` (requests mid-session speaker turn revisions every 5 minutes).
+  - `language_codes`: `["en"]` (URL-encoded JSON array `%5B%22en%22%5D` strictly steering token generation to English).
+  - `language_code`: `en` (singular parameter compatibility fallback).
+  - `language_detection`: `true` (enables per-turn language identification in `Turn` responses).
 
 ### 4.2 Inbound Audio Messages (Client -> Server)
 Binary WebSocket frames containing 16-bit Linear PCM audio (`Int16Array` converted via `floatTo16BitPCM`).

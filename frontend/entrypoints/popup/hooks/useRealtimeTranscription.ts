@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { getGoogleMeetTab } from '../../utils/check-google-meet-connection';
-import type { TranscriptTurn, PartialTranscriptState } from '../../common/types';
+import type { TranscriptTurn, PartialTranscriptState, SpeakerInfo } from '../../common/types';
 
 declare const chrome: any;
 
@@ -47,6 +47,7 @@ export function useRealtimeTranscription({
   const [isTabAudioCaptured, setIsTabAudioCaptured] = useState(false);
   const [partialTranscript, setPartialTranscript] = useState<PartialTranscriptState | null>(null);
   const [finalTranscripts, setFinalTranscripts] = useState<TranscriptTurn[]>([]);
+  const [speakerInfo, setSpeakerInfo] = useState<SpeakerInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPermissionRequired, setIsPermissionRequired] = useState(false);
 
@@ -57,7 +58,7 @@ export function useRealtimeTranscription({
     // 1. Read persisted state from chrome.storage.local
     if (typeof chrome !== 'undefined' && chrome?.storage?.local) {
       chrome.storage.local.get(
-        ['isRecording', 'isTabAudioCaptured', 'partialTranscript', 'finalTranscripts'],
+        ['isRecording', 'isTabAudioCaptured', 'partialTranscript', 'finalTranscripts', 'speakerInfo'],
         (stored: any) => {
           if (!isMounted || !stored) return;
           if (typeof stored.isRecording === 'boolean') {
@@ -65,6 +66,9 @@ export function useRealtimeTranscription({
           }
           if (typeof stored.isTabAudioCaptured === 'boolean') {
             setIsTabAudioCaptured(stored.isTabAudioCaptured);
+          }
+          if (stored.speakerInfo) {
+            setSpeakerInfo(stored.speakerInfo);
           }
           setPartialTranscript(normalizePartial(stored.partialTranscript));
           if (Array.isArray(stored.finalTranscripts)) {
@@ -84,6 +88,9 @@ export function useRealtimeTranscription({
         if (typeof response.isTabAudioCaptured === 'boolean') {
           setIsTabAudioCaptured(response.isTabAudioCaptured);
         }
+        if (response.speakerInfo) {
+          setSpeakerInfo(response.speakerInfo);
+        }
         setPartialTranscript(normalizePartial(response.partialTranscript));
         if (Array.isArray(response.finalTranscripts)) {
           setFinalTranscripts(normalizeTurns(response.finalTranscripts));
@@ -93,7 +100,7 @@ export function useRealtimeTranscription({
       console.warn('[MeetAnalyze] Could not query initial recording state:', err);
     }
 
-    // 3. Listen to live events broadcast from offscreen document
+    // 3. Listen to live events broadcast from offscreen and background
     const messageListener = (message: any) => {
       if (!isMounted || !message) return;
 
@@ -110,6 +117,10 @@ export function useRealtimeTranscription({
         }
         if (onTranscript && (normPartial?.text || message.isFinal)) {
           onTranscript(normPartial?.text || '', !!message.isFinal);
+        }
+      } else if (message.type === 'SPEAKER_INFO_DISPATCH' || message.type === 'SPEAKER_INFO_UPDATED') {
+        if (message.speakerInfo) {
+          setSpeakerInfo(message.speakerInfo);
         }
       } else if (message.type === 'RECORDING_STOPPED') {
         setIsRecording(false);
@@ -163,9 +174,16 @@ export function useRealtimeTranscription({
       // 2. Fetch short-lived token from backend
       const tokenRes = await fetch(`${apiBaseUrl}/api/v1/transcription/token`);
       if (!tokenRes.ok) {
-        throw new Error(`Failed to fetch streaming token from backend (HTTP ${tokenRes.status})`);
+        let errMessage = `Failed to fetch streaming token from backend (HTTP ${tokenRes.status})`;
+        try {
+          const errData = await tokenRes.json();
+          if (errData?.message) errMessage = errData.message;
+        } catch {}
+        throw new Error(errMessage);
       }
-      const { token } = await tokenRes.json();
+      const data = await tokenRes.json();
+      const token = data?.token;
+      const host = data?.host || 'streaming.assemblyai.com';
       if (!token) {
         throw new Error('No token returned from backend server.');
       }
@@ -199,52 +217,36 @@ export function useRealtimeTranscription({
           type: 'START_RECORDING',
           streamId,
           token,
+          host,
           targetTabId: meetTab?.id,
         },
         (res: any) => {
-          setIsConnecting(false);
-          if (res && res.success === false) {
-            setError(res.error || 'Failed to start background recording');
-            setIsRecording(false);
-          } else {
-            setIsRecording(true);
+          if (!res?.success) {
+            setError(res?.error || 'Failed to start background transcription');
+            setIsConnecting(false);
           }
         }
       );
     } catch (err: unknown) {
-      const e = err instanceof Error ? err : new Error(String(err));
-      console.error('Failed to start recording:', e);
-      setError(e.message);
+      const e = err as Error;
       setIsConnecting(false);
-      setIsRecording(false);
-      onError?.(e);
+      setError(e.message || 'Unknown error occurred while starting transcription');
+      if (onError) onError(e);
     }
   }, [apiBaseUrl, onError]);
 
   const stopRecording = useCallback(() => {
-    setIsConnecting(false);
-    setIsRecording(false);
-    setPartialTranscript(null);
-
-    try {
-      chrome.runtime.sendMessage({ type: 'STOP_RECORDING' });
-    } catch (err) {
-      console.warn('[MeetAnalyze] Failed to send STOP_RECORDING:', err);
-    }
+    chrome.runtime?.sendMessage?.({ type: 'STOP_RECORDING' });
   }, []);
 
   const clearTranscripts = useCallback(() => {
     setFinalTranscripts([]);
     setPartialTranscript(null);
-    chrome.storage?.local?.set?.({
-      finalTranscripts: [],
-      partialTranscript: '',
-    });
-    try {
-      chrome.runtime?.sendMessage?.({ type: 'CLEAR_TRANSCRIPTS' });
-    } catch (err) {
-      console.warn('[MeetAnalyze] Failed to broadcast CLEAR_TRANSCRIPTS:', err);
-    }
+    chrome.runtime?.sendMessage?.({ type: 'CLEAR_TRANSCRIPTS' });
+  }, []);
+
+  const setGuestName = useCallback((name: string, originalName?: string) => {
+    chrome.runtime?.sendMessage?.({ type: 'SET_GUEST_NAME', name, originalName });
   }, []);
 
   return {
@@ -254,9 +256,11 @@ export function useRealtimeTranscription({
     isPermissionRequired,
     partialTranscript,
     finalTranscripts,
+    speakerInfo,
     error,
     startRecording,
     stopRecording,
     clearTranscripts,
+    setGuestName,
   };
 }

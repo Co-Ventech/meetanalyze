@@ -62,7 +62,7 @@ export default defineBackground(() => {
           await ensureOffscreenDocument();
 
           // Get previously saved transcripts to preserve them
-          const stored = await chrome.storage?.local?.get(['finalTranscripts']);
+          const stored = await chrome.storage?.local?.get(['finalTranscripts', 'speakerInfo']);
           const initialTranscripts = Array.isArray(stored?.finalTranscripts) ? stored.finalTranscripts : [];
 
           await chrome.storage?.local?.set({
@@ -78,6 +78,7 @@ export default defineBackground(() => {
               type: 'START_OFFSCREEN_RECORDING',
               streamId: message.streamId,
               token: message.token,
+              host: message.host,
               initialTranscripts,
               targetTabId: message.targetTabId,
             },
@@ -111,7 +112,53 @@ export default defineBackground(() => {
       return true;
     }
 
-    // 4. Persistence handlers for events coming from offscreen
+    // 4. Tab speaker bridge: Offscreen document requests speaker info via Background
+    if (message.type === 'POLL_SPEAKER_INFO') {
+      const tabId = message.targetTabId;
+      if (tabId && chrome.tabs?.sendMessage) {
+        chrome.tabs.sendMessage(tabId, { type: 'GET_SPEAKER_INFO' }, (res: any) => {
+          if (chrome.runtime.lastError || !res) {
+            sendResponse({ success: false });
+            return;
+          }
+          sendResponse({ success: true, speakerInfo: res });
+        });
+        return true;
+      }
+      sendResponse({ success: false });
+      return true;
+    }
+
+    // 5. Speaker info update from Content Script -> Save & Forward to Offscreen and UI
+    if (message.type === 'SPEAKER_INFO_UPDATED') {
+      if (message.speakerInfo) {
+        chrome.storage?.local?.set({ speakerInfo: message.speakerInfo });
+        // Broadcast to offscreen and popup/sidepanel
+        chrome.runtime.sendMessage({
+          type: 'SPEAKER_INFO_DISPATCH',
+          speakerInfo: message.speakerInfo,
+        }).catch(() => {});
+      }
+      return false;
+    }
+
+    // 5b. Participant joined or left notifications -> Forward to Offscreen and UI
+    if (message.type === 'PARTICIPANTS_JOINED' || message.type === 'PARTICIPANTS_LEFT') {
+      chrome.runtime.sendMessage(message).catch(() => {});
+      return false;
+    }
+
+    // 6. User sets manual guest name override
+    if (message.type === 'SET_GUEST_NAME') {
+      chrome.runtime.sendMessage({
+        type: 'SET_GUEST_NAME_OFFSCREEN',
+        originalName: message.originalName,
+        name: message.name,
+      }).catch(() => {});
+      return false;
+    }
+
+    // 7. Persistence handlers for events coming from offscreen
     if (message.type === 'TRANSCRIPT_UPDATE') {
       chrome.storage?.local?.set({
         isRecording: true,

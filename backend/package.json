@@ -4,6 +4,10 @@
   "description": "MeetAnalyze Backend Service",
   "type": "commonjs",
   "main": "server.js",
+  "packageManager": "pnpm@9.15.5",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon server.js",

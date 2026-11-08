@@ -81,6 +81,22 @@
 
 ---
 
+### 1.7 Google Meet Material Icon Ligatures & Self-User Duplication in Participant Roster
+- **Symptom**:
+  The Call Participants roster showed unwanted entries:
+  - Material Icon ligatures (`frame_person`, `visual_effects`, `more_vert`, `devices`).
+  - The local user's real name (e.g. `Aahil Alwani`) appeared as a guest participant alongside the local `🎙️ You` chip.
+- **Root Cause**:
+  1. Google Meet applies `class="notranslate"` to Material Icons and symbols (e.g. `<span class="notranslate">frame_person</span>` inside action buttons). Because `.notranslate` was prioritized in `MEET_SELECTORS.nameElements`, the content script read icon ligature text from action buttons on video tiles as participant names.
+  2. Google Meet populates the user's real name into `[data-self-name="<Name>"]` without a `(You)` suffix. `getSelfName()` required `(You)` in text or `aria-label`, so it failed to resolve the user's real name and fell back to `'You'`. Then, `getParticipants()` read `[data-self-name]` as a participant; since `'Aahil Alwani'` did not match `'you'`, it was treated as a guest.
+- **Confirmed Solution**:
+  1. **Selector Hardening**: In [`frontend/entrypoints/utils/meet-selectors.ts`](file:///Users/aahil/Desktop/meetlyst/frontend/entrypoints/utils/meet-selectors.ts), updated `nameElements` to prioritize `div.zWGUkf` and exclude icon fonts and `[aria-hidden="true"]`.
+  2. **Ligature & Icon Filtering**: Added `isValidNameElement()` in [`frontend/entrypoints/content.ts`](file:///Users/aahil/Desktop/meetlyst/frontend/entrypoints/content.ts) to reject `<i>` tags, `aria-hidden="true"`, buttons, and Material Symbol classes. In `isInvalidName()`, added checks for underscores (`/_/.test(lower)`) and populated `UI_BLACKLIST` with all Meet button/icon strings.
+  3. **Direct Self-Name Resolution**: In `getSelfName()`, directly query `[data-self-name]` and cache the real name in `cachedSelfName`.
+  4. **Self Tile & Alias Exclusion**: In `getParticipants()`, self tiles (`data-requested-participant-id`, `data-self-name`, or `(You)`) update `cachedSelfName` and are skipped from guest collection. Built `selfAliases` (`'you'`, `'client'`, `selfName`, `cachedSelfName`) to ensure the user's real name is never added to or retained in `guests` or `knownGuests`.
+
+---
+
 ## 2. Active Technical Constraints & Watch Items
 
 ### 2.1 Google Meet DOM Obfuscation

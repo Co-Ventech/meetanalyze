@@ -130,9 +130,18 @@ Follow these rules throughout the analysis:
 - Avoid repeating the same weakness under multiple headings without adding new insight.
 - Clearly distinguish facts, interpretations, and recommendations.
 
+**H. English Language Requirement (Strict)**
+- This evaluation system exclusively processes and generates English reports.
+- All assessments, scorecards, justifications, and recommendations must be written exclusively in English.
+- If the transcript is predominantly in a non-English language, refuse the analysis with: "Error: Only English meeting transcripts are supported for evaluation."
+
 ## Final Instruction
 
 Deliver a professional sales performance report suitable for management review and representative coaching.
 
 Prioritize accuracy over completeness. An honest assessment with limited findings is better than a detailed assessment containing unsupported conclusions.
 `;
+
+module.exports = {
+  SALES_PROMPT,
+};
