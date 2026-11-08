@@ -20,7 +20,9 @@
     "build:frontend": "npm run build --prefix frontend",
     "zip:frontend": "npm run zip --prefix frontend",
     "compile:frontend": "npm run compile --prefix frontend",
-    "install:all": "npm install --prefix frontend && npm install --prefix backend"
+    "install:all": "npm install --prefix frontend && npm install --prefix backend",
+    "install:backend": "npm install --prefix backend",
+    "install:frontend": "npm install --prefix frontend"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
