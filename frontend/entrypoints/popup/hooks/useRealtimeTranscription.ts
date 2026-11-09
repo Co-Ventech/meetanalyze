@@ -118,6 +118,10 @@ export function useRealtimeTranscription({
         if (onTranscript && (normPartial?.text || message.isFinal)) {
           onTranscript(normPartial?.text || '', !!message.isFinal);
         }
+      } else if (message.type === 'TRANSCRIPTS_RELABELED') {
+        if (Array.isArray(message.finalTranscripts)) {
+          setFinalTranscripts(normalizeTurns(message.finalTranscripts));
+        }
       } else if (message.type === 'SPEAKER_INFO_DISPATCH' || message.type === 'SPEAKER_INFO_UPDATED') {
         if (message.speakerInfo) {
           setSpeakerInfo(message.speakerInfo);
@@ -171,22 +175,27 @@ export function useRealtimeTranscription({
         }
       }
 
-      // 2. Fetch short-lived token from backend
-      const tokenRes = await fetch(`${apiBaseUrl}/api/v1/transcription/token`);
-      if (!tokenRes.ok) {
-        let errMessage = `Failed to fetch streaming token from backend (HTTP ${tokenRes.status})`;
-        try {
-          const errData = await tokenRes.json();
-          if (errData?.message) errMessage = errData.message;
-        } catch {}
-        throw new Error(errMessage);
-      }
-      const data = await tokenRes.json();
-      const token = data?.token;
-      const host = data?.host || 'streaming.assemblyai.com';
-      if (!token) {
-        throw new Error('No token returned from backend server.');
-      }
+      // 2. Fetch short-lived tokens from backend.
+      // Mic and Meet-tab audio are transcribed as two separate AssemblyAI sessions
+      // (one token per session) so "me vs others" never has to be guessed.
+      const fetchToken = async (): Promise<{ token: string; host: string }> => {
+        const tokenRes = await fetch(`${apiBaseUrl}/api/v1/transcription/token`);
+        if (!tokenRes.ok) {
+          let errMessage = `Failed to fetch streaming token from backend (HTTP ${tokenRes.status})`;
+          try {
+            const errData = await tokenRes.json();
+            if (errData?.message) errMessage = errData.message;
+          } catch {}
+          throw new Error(errMessage);
+        }
+        const data = await tokenRes.json();
+        if (!data?.token) {
+          throw new Error('No token returned from backend server.');
+        }
+        return { token: data.token, host: data.host || 'streaming.assemblyai.com' };
+      };
+      const [micAuth, tabAuth] = await Promise.all([fetchToken(), fetchToken().catch(() => null)]);
+      const host = micAuth.host;
 
       // 3. Acquire Google Meet Tab Media Stream ID
       let streamId: string | undefined;
@@ -216,7 +225,8 @@ export function useRealtimeTranscription({
         {
           type: 'START_RECORDING',
           streamId,
-          token,
+          micToken: micAuth.token,
+          tabToken: tabAuth?.token,
           host,
           targetTabId: meetTab?.id,
         },
@@ -249,6 +259,18 @@ export function useRealtimeTranscription({
     chrome.runtime?.sendMessage?.({ type: 'SET_GUEST_NAME', name, originalName });
   }, []);
 
+  const relabelFromMeet = useCallback(async (): Promise<{ status: string; changed?: number; reason?: string }> => {
+    return new Promise((resolve) => {
+      chrome.runtime?.sendMessage?.({ type: 'RELABEL_FROM_MEET' }, (res: any) => {
+        if (chrome.runtime?.lastError || !res) {
+          resolve({ status: 'unavailable', reason: chrome.runtime?.lastError?.message || 'No response' });
+          return;
+        }
+        resolve(res);
+      });
+    });
+  }, []);
+
   return {
     isRecording,
     isConnecting,
@@ -262,5 +284,6 @@ export function useRealtimeTranscription({
     stopRecording,
     clearTranscripts,
     setGuestName,
+    relabelFromMeet,
   };
 }

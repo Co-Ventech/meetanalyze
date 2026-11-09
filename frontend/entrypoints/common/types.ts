@@ -9,6 +9,15 @@ export interface TranscriptTurn {
   systemNotice?: boolean; // true for join/leave or call status notices
   cluster?: string;       // AssemblyAI acoustic cluster e.g. "A", "B"
   turnOrder?: number;     // AssemblyAI turn_order for SpeakerRevision mapping
+  unresolved?: boolean;   // true while a remote turn only has a placeholder label ("Speaker A" / "Client")
+  resolvedBy?: 'cluster' | 'elimination' | 'captions' | 'active-speaker' | 'single-guest' | 'meet-api' | 'manual';
+  sessionId?: string;     // recording session the turn came from (cluster letters are per-session)
+  // Direct per-turn evidence for who spoke (cluster names are a weighted vote over this)
+  evidenceName?: string;
+  evidenceSource?: 'captions' | 'single-guest' | 'manual' | 'meet-api';
+  // Weak hint (partial caption overlap / tile indicator) used only when nothing better exists
+  weakName?: string;
+  weakBy?: 'captions' | 'active-speaker';
 }
 
 export interface PartialTranscriptState {
@@ -21,6 +30,17 @@ export interface SpeakerInterval {
   speaker: string;
   start: number;      // epoch ms
   end: number;        // epoch ms
+  // 'captions' = Meet live caption speaker (most reliable), 'active' = tile speaking indicator
+  source?: 'captions' | 'active';
+  isSelf?: boolean;
+}
+
+// Pending post-meeting relabel job using the Google Meet REST API
+export interface MeetRelabelJob {
+  meetingCode: string;
+  startedAt: number;  // epoch ms when recording started
+  stoppedAt: number;  // epoch ms when recording stopped
+  attempts: number;
 }
 
 export interface RecentJoiner {

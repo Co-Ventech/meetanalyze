@@ -1,7 +1,6 @@
 import type { SpeakerInfo, SpeakerInterval, RecentJoiner } from './common/types';
 import {
   MEET_SELECTORS,
-  ACTIVE_SPEAKER_BORDER_COLORS,
   UI_BLACKLIST,
   JOIN_NOTIFICATION_PATTERNS,
   LEAVE_NOTIFICATION_PATTERNS,
@@ -367,40 +366,182 @@ export default defineContentScript({
       return { all, guests };
     }
 
-    // 3. Detect the active speaker in real-time
-    function getActiveSpeaker(selfName: string): string | null {
-      // Strategy A: Check Closed Captions
-      const captionContainer = document.querySelector(MEET_SELECTORS.captionContainer);
-      if (captionContainer) {
-        const speakerEls = captionContainer.querySelectorAll(MEET_SELECTORS.captionSpeakers);
-        if (speakerEls.length > 0) {
-          const latestSpeakerEl = speakerEls[speakerEls.length - 1];
-          if (isValidNameElement(latestSpeakerEl)) {
-            const text = latestSpeakerEl?.textContent?.trim() || '';
-            const cleaned = cleanName(text);
-            if (cleaned && !isInvalidName(cleaned)) {
-              return cleaned;
+    // 3a. Meet live captions -> speaker timeline (most reliable name signal in the DOM)
+    // Each caption block carries the speaker's display name. We record when a block first
+    // appears and when its text last changed, which approximates when that person spoke.
+    interface CaptionEntry {
+      speaker: string;
+      isSelf: boolean;
+      start: number;
+      end: number;
+      lastText: string;
+    }
+    const captionEntryByBlock = new WeakMap<Element, CaptionEntry>();
+    const captionEntries: CaptionEntry[] = [];
+    // Captions lag speech by roughly a second; shift caption start earlier to compensate
+    const CAPTION_LEAD_MS = 1200;
+
+    function findCaptionBlock(speakerEl: Element, container: Element): Element {
+      let block: Element = speakerEl;
+      while (
+        block.parentElement &&
+        block.parentElement !== container &&
+        block.parentElement.querySelectorAll(MEET_SELECTORS.captionSpeakers).length === 1
+      ) {
+        block = block.parentElement;
+      }
+      return block;
+    }
+
+    // First element (in document order) under root that holds text directly and isn't an icon
+    function firstTextLeaf(root: Element): Element | null {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      let node = walker.nextNode() as Element | null;
+      while (node) {
+        if (
+          node.childElementCount === 0 &&
+          node.tagName !== 'IMG' &&
+          (node.textContent || '').trim() &&
+          isValidNameElement(node)
+        ) {
+          return node;
+        }
+        node = walker.nextNode() as Element | null;
+      }
+      return null;
+    }
+
+    // Outermost caption containers (ignore buttons/menu items that merely mention captions)
+    function findCaptionContainers(): Element[] {
+      const candidates = Array.from(document.querySelectorAll(MEET_SELECTORS.captionContainer)).filter(
+        (el) => el.tagName !== 'BUTTON' && !el.closest('button, [role="button"], [role="menuitem"], [role="menu"]')
+      );
+      return candidates.filter((el) => !candidates.some((other) => other !== el && other.contains(el)));
+    }
+
+    /**
+     * Find (speaker name element, caption block) pairs. Uses known Meet classes first, then a
+     * structural fallback that survives class renames: every caption block starts with the
+     * speaker's avatar <img>, followed by the name, followed by the spoken text.
+     */
+    function extractCaptionPairs(container: Element): { nameEl: Element; block: Element }[] {
+      const pairs: { nameEl: Element; block: Element }[] = [];
+      const seenBlocks = new Set<Element>();
+
+      container.querySelectorAll(MEET_SELECTORS.captionSpeakers).forEach((nameEl) => {
+        const block = findCaptionBlock(nameEl, container);
+        if (seenBlocks.has(block)) return;
+        seenBlocks.add(block);
+        pairs.push({ nameEl, block });
+      });
+      if (pairs.length > 0) return pairs;
+
+      container.querySelectorAll('img').forEach((img) => {
+        let block: Element | null = img.parentElement;
+        for (let depth = 0; block && depth < 6; depth++) {
+          const nameEl = firstTextLeaf(block);
+          const nameText = nameEl?.textContent?.trim() || '';
+          const blockText = (block.textContent || '').trim();
+          // A block holds both the name and some caption text after it
+          if (nameEl && nameText && blockText.length > nameText.length) {
+            if (!seenBlocks.has(block)) {
+              seenBlocks.add(block);
+              pairs.push({ nameEl, block });
             }
+            return;
+          }
+          if (block === container) return;
+          block = block.parentElement;
+        }
+      });
+      return pairs;
+    }
+
+    let captionDiag = { containers: 0, blocks: 0, lastLog: 0 };
+
+    function scanCaptions(selfName: string) {
+      const containers = findCaptionContainers();
+      captionDiag.containers = containers.length;
+      captionDiag.blocks = 0;
+      if (containers.length === 0) return;
+      const now = Date.now();
+      const selfLower = selfName.toLowerCase();
+
+      for (const container of containers) {
+        for (const { nameEl, block } of extractCaptionPairs(container)) {
+          const rawName = nameEl.textContent?.trim() || '';
+          const name = cleanName(rawName);
+          if (!name || isInvalidName(name)) continue;
+
+          const fullText = block.textContent || '';
+          const text = fullText.replace(rawName, '').trim();
+          if (!text) continue;
+          captionDiag.blocks++;
+
+          const isSelf =
+            name.toLowerCase() === 'you' ||
+            name.toLowerCase() === selfLower ||
+            (!!cachedSelfName && name.toLowerCase() === cachedSelfName.toLowerCase());
+
+          const existing = captionEntryByBlock.get(block);
+          if (!existing || existing.speaker !== name) {
+            const entry: CaptionEntry = {
+              speaker: name,
+              isSelf,
+              start: now - CAPTION_LEAD_MS,
+              end: now,
+              lastText: text,
+            };
+            captionEntryByBlock.set(block, entry);
+            captionEntries.push(entry);
+          } else if (existing.lastText !== text) {
+            existing.lastText = text;
+            existing.end = now;
           }
         }
       }
 
-      // Strategy B: Check video tiles for active speaking indicators (visualizer or blue ring)
+      // Prune caption entries older than 60 seconds
+      const cutoff = now - 60000;
+      while (captionEntries.length > 0 && (captionEntries[0]?.end ?? 0) < cutoff) {
+        captionEntries.shift();
+      }
+    }
+
+    function getCaptionIntervals(): SpeakerInterval[] {
+      return captionEntries.map((e) => ({
+        speaker: e.speaker,
+        start: e.start,
+        end: e.end + 300,
+        source: 'captions' as const,
+        isSelf: e.isSelf,
+      }));
+    }
+
+    // 3b. Detect the active speaker in real-time
+    function getActiveSpeaker(selfName: string): string | null {
+      // Strategy A: Most recently updated caption block (within the last 1.5s)
+      const now = Date.now();
+      for (let i = captionEntries.length - 1; i >= 0; i--) {
+        const entry = captionEntries[i];
+        if (entry && now - entry.end < 1500) {
+          return entry.isSelf ? selfName : entry.speaker;
+        }
+      }
+
+      // Strategy B: Explicit speaking indicators on video tiles.
+      // (Border colour and "unmuted" checks were removed: Meet draws its ring with an overlay,
+      // and unmuted does not mean speaking, so both produced false positives.)
       const tiles = document.querySelectorAll(MEET_SELECTORS.tiles);
       for (const tile of tiles) {
         const isSpeakingAria = !!tile.querySelector(
-          '[aria-label*="speaking" i], [aria-label*="is talking" i], [aria-label*="unmuted" i]'
+          '[aria-label*="is speaking" i], [aria-label*="is talking" i]'
         );
         const isSpeakingClass =
           tile.classList.contains('speaking') ||
-          !!tile.querySelector('[class*="speaking" i], [data-is-speaking="true"]');
+          !!tile.querySelector('[data-is-speaking="true"]');
 
-        // Check for blue border/ring
-        const computedStyle = window.getComputedStyle(tile);
-        const borderColor = computedStyle.borderColor || '';
-        const isBlueBorder = ACTIVE_SPEAKER_BORDER_COLORS.some((color) => borderColor.includes(color));
-
-        if (isSpeakingAria || isSpeakingClass || isBlueBorder) {
+        if (isSpeakingAria || isSpeakingClass) {
           // If this is the self tile, the active speaker is self
           const isSelfTile =
             tile.hasAttribute('data-requested-participant-id') ||
@@ -459,8 +600,9 @@ export default defineContentScript({
     const recentIntervals: SpeakerInterval[] = [];
     let currentInterval: { speaker: string; start: number } | null = null;
 
-    function recordSpeakerActivity(activeSpeaker: string | null) {
+    function recordSpeakerActivity(activeSpeaker: string | null, selfName: string) {
       const now = Date.now();
+      const isSelfName = (n: string) => n.toLowerCase() === selfName.toLowerCase() || n.toLowerCase() === 'you';
 
       if (activeSpeaker) {
         if (!currentInterval || currentInterval.speaker !== activeSpeaker) {
@@ -470,6 +612,8 @@ export default defineContentScript({
               speaker: currentInterval.speaker,
               start: currentInterval.start,
               end: now,
+              source: 'active',
+              isSelf: isSelfName(currentInterval.speaker),
             });
           }
           currentInterval = { speaker: activeSpeaker, start: now };
@@ -480,16 +624,106 @@ export default defineContentScript({
             speaker: currentInterval.speaker,
             start: currentInterval.start,
             end: now,
+            source: 'active',
+            isSelf: isSelfName(currentInterval.speaker),
           });
           currentInterval = null;
         }
       }
 
-      // Prune intervals older than 45 seconds to keep memory minimal
-      const cutoff = now - 45000;
+      // Prune intervals older than 60 seconds to keep memory minimal
+      const cutoff = now - 60000;
       while (recentIntervals.length > 0 && (recentIntervals[0]?.end ?? 0) < cutoff) {
         recentIntervals.shift();
       }
+    }
+
+    // 3c. Auto-enable Meet captions while recording, hidden from view
+    const CAPTION_HIDE_STYLE_ID = 'meetanalyze-hide-captions';
+    let captionsEnabledByUs = false;
+
+    function areCaptionsOn(): boolean {
+      return !!document.querySelector(MEET_SELECTORS.captionsOffBtn);
+    }
+
+    function hideCaptions() {
+      if (document.getElementById(CAPTION_HIDE_STYLE_ID)) return;
+      const style = document.createElement('style');
+      style.id = CAPTION_HIDE_STYLE_ID;
+      // Keep the caption region in the DOM (so Meet keeps rendering it) but invisible
+      style.textContent = `
+        [role="region"][aria-label*="caption" i], [jsname="dsZIyd"], .nMcdL.bj4p3b {
+          opacity: 0 !important;
+          pointer-events: none !important;
+          position: fixed !important;
+          left: -10000px !important;
+          bottom: 0 !important;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
+    function showCaptions() {
+      document.getElementById(CAPTION_HIDE_STYLE_ID)?.remove();
+    }
+
+    function pressCaptionsShortcut() {
+      // Meet's keyboard shortcut for captions is "c". Synthetic events may be ignored; best-effort.
+      const opts = { key: 'c', code: 'KeyC', keyCode: 67, which: 67, bubbles: true };
+      document.body.dispatchEvent(new KeyboardEvent('keydown', opts));
+      document.body.dispatchEvent(new KeyboardEvent('keyup', opts));
+    }
+
+    function enableCaptionsForRecording(attempt = 0) {
+      if (areCaptionsOn()) {
+        // Only hide captions we turned on ourselves; respect captions the user chose to see
+        if (captionsEnabledByUs) hideCaptions();
+        return;
+      }
+      const btn = document.querySelector<HTMLButtonElement>(MEET_SELECTORS.captionsOnBtn);
+      if (btn) {
+        btn.click();
+      } else if (attempt === 0) {
+        pressCaptionsShortcut();
+      }
+      captionsEnabledByUs = true;
+      hideCaptions();
+      // Verify and retry for a few seconds (control bar may be hidden or still loading)
+      if (attempt < 5) {
+        setTimeout(() => {
+          if (!areCaptionsOn()) enableCaptionsForRecording(attempt + 1);
+        }, 1000);
+      }
+    }
+
+    // Log caption-reading health every 10s while recording (visible in the Meet tab's DevTools console)
+    let captionDiagTimer: ReturnType<typeof setInterval> | null = null;
+    function startCaptionDiagnostics() {
+      if (captionDiagTimer) return;
+      captionDiagTimer = setInterval(() => {
+        const on = areCaptionsOn();
+        const latest = captionEntries[captionEntries.length - 1];
+        console.log(
+          `[MeetAnalyze captions] captionsOn=${on} containers=${captionDiag.containers} blocks=${captionDiag.blocks}` +
+            ` entries=${captionEntries.length} latest=${latest ? `${latest.speaker} (${Math.round((Date.now() - latest.end) / 1000)}s ago)` : 'none'}`
+        );
+        if (on && captionDiag.containers > 0 && captionDiag.blocks === 0 && captionEntries.length === 0) {
+          const c = findCaptionContainers()[0];
+          console.log('[MeetAnalyze captions] caption container found but no speaker blocks parsed. HTML:', c?.outerHTML.slice(0, 3000));
+        }
+      }, 10000);
+    }
+
+    function restoreCaptionsAfterRecording() {
+      if (captionDiagTimer) {
+        clearInterval(captionDiagTimer);
+        captionDiagTimer = null;
+      }
+      if (captionsEnabledByUs && areCaptionsOn()) {
+        document.querySelector<HTMLButtonElement>(MEET_SELECTORS.captionsOffBtn)?.click();
+      }
+      captionsEnabledByUs = false;
+      showCaptions();
     }
 
     // Track participants dynamically across session
@@ -513,9 +747,10 @@ export default defineContentScript({
     function collectSpeakerInfo(): SpeakerInfo {
       const selfName = getSelfName();
       const { all: scannedAll, guests: scannedGuests } = getParticipants(selfName);
+      scanCaptions(selfName);
       const activeSpeaker = getActiveSpeaker(selfName);
 
-      recordSpeakerActivity(activeSpeaker);
+      recordSpeakerActivity(activeSpeaker, selfName);
 
       const now = Date.now();
       const newlyJoined: string[] = [];
@@ -585,15 +820,20 @@ export default defineContentScript({
       // Stable roster of guests who are in the call
       const stableGuests = Array.from(knownGuests);
 
-      // Current active interval extended to now
+      // Current active interval extended to now, plus caption-derived intervals
       const activeSnapshot: SpeakerInterval[] = [...recentIntervals];
       if (currentInterval) {
         activeSnapshot.push({
           speaker: currentInterval.speaker,
           start: currentInterval.start,
           end: Date.now() + 1000,
+          source: 'active',
+          isSelf:
+            currentInterval.speaker.toLowerCase() === selfName.toLowerCase() ||
+            currentInterval.speaker.toLowerCase() === 'you',
         });
       }
+      activeSnapshot.push(...getCaptionIntervals());
 
       return {
         selfName,
@@ -683,6 +923,19 @@ export default defineContentScript({
             message: 'Connected to Google Meet',
             speakerInfo: info,
           });
+          return true;
+        }
+
+        if (msg?.type === 'MEETANALYZE_RECORDING_STARTED') {
+          enableCaptionsForRecording();
+          startCaptionDiagnostics();
+          sendResponse({ success: true });
+          return true;
+        }
+
+        if (msg?.type === 'MEETANALYZE_RECORDING_STOPPED') {
+          restoreCaptionsAfterRecording();
+          sendResponse({ success: true });
           return true;
         }
 

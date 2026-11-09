@@ -32,6 +32,9 @@ export const MEET_SELECTORS = {
   // Closed Captions (real-time backup)
   captionContainer: '[role="region"][aria-label*="caption" i], [aria-label*="Closed captions" i], [jsname="dsZIyd"], .nMcdL.bj4p3b',
   captionSpeakers: '.NWpY1d, .zs7s8d, [jsname="tgaKEf"] span:first-child',
+  // Captions toggle button in the bottom control bar
+  captionsOnBtn: 'button[aria-label*="Turn on captions" i]',
+  captionsOffBtn: 'button[aria-label*="Turn off captions" i]',
 
   // Self identification
   googleAccountBtn: 'a[aria-label*="Google Account" i], button[aria-label*="Google Account" i]',

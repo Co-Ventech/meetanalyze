@@ -23,6 +23,7 @@ function App() {
     stopRecording,
     clearTranscripts,
     setGuestName,
+    relabelFromMeet,
   } = useRealtimeTranscription({
     apiBaseUrl: (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:2000',
   });
@@ -56,6 +57,28 @@ function App() {
       }
     } catch (err) {
       console.warn('[MeetAnalyze] Side panel open failed:', err);
+    }
+  };
+
+  const [isRelabeling, setIsRelabeling] = useState(false);
+
+  const handleRelabelFromMeet = async () => {
+    setIsRelabeling(true);
+    setInsightMessage(null);
+    try {
+      const res = await relabelFromMeet();
+      if (res.status === 'done') {
+        setInsightMessage({
+          type: 'success',
+          text: res.changed ? `Updated ${res.changed} speaker label(s) from Google Meet` : 'Speaker names already match Google Meet',
+        });
+      } else if (res.status === 'pending') {
+        setInsightMessage({ type: 'error', text: "Google Meet's transcript isn't ready yet. Try again in a few minutes." });
+      } else {
+        setInsightMessage({ type: 'error', text: res.reason || 'Google Meet transcript not available for this meeting' });
+      }
+    } finally {
+      setIsRelabeling(false);
     }
   };
 
@@ -425,6 +448,18 @@ function App() {
           </>
         )}
       </button>
+
+      {/* Post-meeting speaker correction via Google Meet REST API */}
+      {!isRecording && finalTranscripts.some((t) => !t.isSelf && !t.systemNotice) && (
+        <button
+          onClick={handleRelabelFromMeet}
+          disabled={isRelabeling}
+          className="w-full py-1.5 px-3 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-300 text-xs rounded-md transition cursor-pointer"
+          title="Uses Google Meet's own transcript (Workspace meetings with transcription on) to correct speaker names"
+        >
+          {isRelabeling ? 'Checking Google Meet transcript...' : 'Fix speaker names from Google Meet'}
+        </button>
+      )}
 
       {/* Insight Status Alert */}
       {insightMessage && (

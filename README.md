@@ -129,3 +129,40 @@ meetlyst/
 | **Word Document Generator** | [`backend/src/utils/doc-generator.js`](file:///Users/aahil/Desktop/meetlyst/backend/src/utils/doc-generator.js) | Translates markdown insights into styled Microsoft Word `.doc` files with tables, headers, and metadata. |
 | **Auth & User Service** | [`backend/src/services/user.service.js`](file:///Users/aahil/Desktop/meetlyst/backend/src/services/user.service.js) | Handles user registration, password hashing (`bcrypt`), and session management (`jsonwebtoken`). |
 
+
+---
+
+## 6. Speaker Attribution
+
+How the extension decides who said what:
+
+1. **You vs. everyone else.** Two separate AssemblyAI sessions run at once:
+   - The **mic** session: every line from it is labelled as you.
+   - The **Meet tab** session: every line from it is labelled as a remote participant.
+
+   An echo guard removes mic lines that are copies of speech coming out of your speakers when you aren't using headphones.
+2. **Which remote person.** While recording, the extension turns on Meet's live captions and hides them from view. Each caption block shows a speaker name, and the extension uses those names as a "who spoke when" timeline.
+
+   Each remote line gets the name that overlaps it most in that timeline. That name is then attached to AssemblyAI's voice cluster for that speaker. If the user already had captions on, they stay visible.
+3. **Unknown speakers.** If no name can be found, the line shows `Speaker A/B…`. Renaming one of those in the UI renames the whole voice cluster.
+4. **Fixing names after the meeting (optional).** If the meeting used Google Meet's own transcription on an eligible Workspace plan, the extension downloads Google's transcript through the Meet REST API (`conferenceRecords.transcripts.entries`) and corrects remote speaker names.
+   - It checks every minute for up to 15 minutes after recording stops.
+   - The **Fix speaker names from Google Meet** button runs the check on demand.
+
+### Enabling step 4 (Google OAuth)
+
+1. In Google Cloud, enable the **Google Meet REST API**.
+2. Create an OAuth client of type **Chrome Extension**, using the extension's ID.
+   - Load the unpacked build once to see the ID.
+   - Pin the ID with a manifest `key` if you need it to stay the same.
+3. Add the scope `https://www.googleapis.com/auth/meetings.space.readonly` to the OAuth consent screen.
+   - It's a sensitive scope.
+   - While the app is unverified, only listed test users can sign in.
+   - Publishing to everyone requires Google's verification.
+4. Put the client ID in `frontend/.env`:
+   ```
+   WXT_GOOGLE_OAUTH_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
+   ```
+5. Rebuild the extension.
+
+If no client ID is set, the `identity` permission and `oauth2` block are left out of the manifest and step 4 is skipped.
