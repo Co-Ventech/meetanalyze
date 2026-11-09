@@ -42,3 +42,5 @@ web-ext.config.ts
 *.sw?
 graphify-out
 .agents
+.vercel
+.env*
