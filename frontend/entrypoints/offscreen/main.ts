@@ -1,4 +1,4 @@
-import type { TranscriptTurn, PartialTranscriptState, SpeakerInfo } from '../common/types';
+import type { TranscriptTurn, PartialTranscriptState, SpeakerInfo, SpeakerInterval } from '../common/types';
 
 declare const chrome: any;
 
@@ -21,7 +21,14 @@ let speakerInfo: SpeakerInfo = {
   activeSpeaker: null,
   allParticipants: [],
   guests: [],
+  intervals: [],
 };
+
+let speakerIntervals: SpeakerInterval[] = [];
+let lastGuestSpeaker: string | null = null;
+let guestOverrides: Record<string, string> = {};
+let clusterToNameMap: Record<string, string> = {};
+let sessionAnnouncedJoins = new Set<string>();
 
 let currentSpeaker = {
   name: 'You',
@@ -42,7 +49,7 @@ function getStreamVolume(analyser: AnalyserNode): number {
   analyser.getByteTimeDomainData(data);
   let sum = 0;
   for (let i = 0; i < data.length; i++) {
-    const val = (data[i] - 128) / 128;
+    const val = ((data[i] ?? 128) - 128) / 128;
     sum += val * val;
   }
   return Math.sqrt(sum / data.length);
@@ -60,27 +67,160 @@ function floatTo16BitPCM(input: Float32Array): ArrayBuffer {
   return buffer;
 }
 
-// Poll Google Meet content script for active speaker & participant names
+// Helper to verify that text is in the English / Latin alphabet
+// Rejects foreign alphabets (Arabic, Urdu, Cyrillic, Devanagari, CJK, Hebrew, etc.)
+function isEnglishTranscript(text: string): boolean {
+  if (!text || !text.trim()) return false;
+
+  // Reject text containing non-Latin scripts:
+  // Arabic/Urdu, Devanagari/Hindi, Cyrillic/Russian, CJK, Japanese, Korean, Hebrew, Thai, Greek
+  const nonLatinRegex = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF\u0900-\u097F\u0400-\u04FF\u4E00-\u9FFF\u3400-\u4DBF\u3040-\u309F\u30A0-\u30FF\uAC00-\uD7AF\u0590-\u05FF\u0E00-\u0E7F\u0370-\u03FF]/;
+  if (nonLatinRegex.test(text)) {
+    return false;
+  }
+
+  // Must contain alphanumeric characters
+  if (!/[a-zA-Z0-9]/.test(text)) {
+    return false;
+  }
+
+  return true;
+}
+
+// Find speaker from Google Meet active speaker intervals that overlaps a given time window
+function matchSpeakerFromIntervals(windowStart: number, windowEnd: number): string | null {
+  if (!speakerIntervals || speakerIntervals.length === 0) return null;
+
+  for (let i = speakerIntervals.length - 1; i >= 0; i--) {
+    const interval = speakerIntervals[i];
+    if (interval && windowStart <= interval.end && windowEnd >= interval.start) {
+      const lower = interval.speaker.toLowerCase();
+      if (lower !== speakerInfo.selfName.toLowerCase() && lower !== 'you') {
+        return interval.speaker;
+      }
+    }
+  }
+
+  return null;
+}
+
+// Apply updated speaker info and retroactively correct placeholder turns
+function applySpeakerInfoUpdate(newInfo: Partial<SpeakerInfo>) {
+  if (!newInfo) return;
+
+  speakerInfo = {
+    selfName: newInfo.selfName || speakerInfo.selfName || 'You',
+    activeSpeaker: newInfo.activeSpeaker ?? speakerInfo.activeSpeaker,
+    allParticipants: Array.isArray(newInfo.allParticipants) ? newInfo.allParticipants : speakerInfo.allParticipants,
+    guests: Array.isArray(newInfo.guests) ? newInfo.guests : speakerInfo.guests,
+    intervals: Array.isArray(newInfo.intervals) ? newInfo.intervals : speakerInfo.intervals,
+    recentJoiners: Array.isArray(newInfo.recentJoiners) ? newInfo.recentJoiners : speakerInfo.recentJoiners,
+  };
+
+  if (Array.isArray(newInfo.intervals) && newInfo.intervals.length > 0) {
+    speakerIntervals = newInfo.intervals;
+  }
+
+  // Update last guest speaker if activeSpeaker is a guest
+  if (
+    speakerInfo.activeSpeaker &&
+    speakerInfo.activeSpeaker.toLowerCase() !== speakerInfo.selfName.toLowerCase() &&
+    speakerInfo.activeSpeaker.toLowerCase() !== 'you'
+  ) {
+    lastGuestSpeaker = speakerInfo.activeSpeaker;
+  } else if (!lastGuestSpeaker && speakerInfo.guests.length === 1) {
+    lastGuestSpeaker = speakerInfo.guests[0] ?? null;
+  }
+
+  // Dynamic Retroactive Turn Correction:
+  // When an active speaker is confirmed, resolve turns from the last 6 seconds
+  const now = Date.now();
+  let updatedAnyTurn = false;
+
+  finalTranscripts = finalTranscripts.map((turn) => {
+    if (turn.isSelf || turn.systemNotice) return turn;
+
+    const turnEnd = turn.endMs || now;
+    const turnStart = turn.startMs || (turnEnd - 3000);
+
+    // Only inspect recent turns within the last 6 seconds
+    if (now - turnEnd < 6000) {
+      const matchingIntervalSpeaker = matchSpeakerFromIntervals(turnStart, turnEnd);
+      const targetSpeaker =
+        matchingIntervalSpeaker ||
+        (speakerInfo.guests.length === 1 ? speakerInfo.guests[0] : null);
+
+      if (
+        targetSpeaker &&
+        targetSpeaker !== turn.speaker &&
+        (turn.speaker === 'Client' || turn.speaker === 'Guest')
+      ) {
+        updatedAnyTurn = true;
+        if (turn.cluster) {
+          clusterToNameMap[turn.cluster] = targetSpeaker;
+        }
+        const overridden = guestOverrides[targetSpeaker] || targetSpeaker;
+        return { ...turn, speaker: overridden };
+      }
+
+      // Check if turn cluster was resolved
+      if (turn.cluster && clusterToNameMap[turn.cluster] && (turn.speaker === 'Client' || turn.speaker === 'Guest')) {
+        const resolved = clusterToNameMap[turn.cluster];
+        if (resolved) {
+          updatedAnyTurn = true;
+          const overridden = guestOverrides[resolved] || resolved;
+          return { ...turn, speaker: overridden };
+        }
+      }
+    }
+    return turn;
+  });
+
+  if (partialState && !partialState.isSelf) {
+    const matchingIntervalSpeaker = matchSpeakerFromIntervals(now - 2000, now);
+    const targetSpeaker =
+      matchingIntervalSpeaker ||
+      lastGuestSpeaker ||
+      (speakerInfo.guests.length === 1 ? speakerInfo.guests[0] : null);
+
+    if (
+      targetSpeaker &&
+      targetSpeaker !== partialState.speaker &&
+      (partialState.speaker === 'Client' || partialState.speaker === 'Guest')
+    ) {
+      const overridden = guestOverrides[targetSpeaker] || targetSpeaker;
+      partialState = { ...partialState, speaker: overridden };
+      updatedAnyTurn = true;
+    }
+  }
+
+  if (updatedAnyTurn) {
+    chrome.runtime?.sendMessage?.({
+      type: 'TRANSCRIPT_UPDATE',
+      partialTranscript: partialState,
+      finalTranscripts: [...finalTranscripts],
+      isFinal: false,
+      isTabAudioCaptured,
+    }).catch(() => {});
+  }
+}
+
+// Poll Google Meet content script for active speaker & participant names via Background SW
 function refreshSpeakerInfo() {
   if (!targetTabId) return;
 
   try {
-    chrome.tabs?.sendMessage?.(targetTabId, { type: 'GET_SPEAKER_INFO' }, (res: any) => {
-      if (chrome.runtime?.lastError) {
-        // Tab may have navigated or closed
-        return;
+    chrome.runtime?.sendMessage?.(
+      { type: 'POLL_SPEAKER_INFO', targetTabId },
+      (res: any) => {
+        if (chrome.runtime?.lastError) return;
+        if (res?.success && res?.speakerInfo) {
+          applySpeakerInfoUpdate(res.speakerInfo);
+        }
       }
-      if (res && res.selfName) {
-        speakerInfo = {
-          selfName: res.selfName || 'You',
-          activeSpeaker: res.activeSpeaker || null,
-          allParticipants: Array.isArray(res.allParticipants) ? res.allParticipants : [],
-          guests: Array.isArray(res.guests) ? res.guests : [],
-        };
-      }
-    });
+    );
   } catch (err) {
-    console.warn('[Offscreen] Error polling speaker info:', err);
+    console.warn('[Offscreen] Error polling speaker info via background:', err);
   }
 }
 
@@ -149,7 +289,8 @@ async function startOffscreenRecording(
   streamId?: string,
   token?: string,
   initialTranscripts: any[] = [],
-  meetTabId?: number
+  meetTabId?: number,
+  wsHost: string = 'streaming.assemblyai.com'
 ) {
   if (!token) {
     throw new Error('No AssemblyAI streaming token provided to offscreen recorder.');
@@ -158,6 +299,15 @@ async function startOffscreenRecording(
   isRecording = true;
   targetTabId = meetTabId || null;
   partialState = { speaker: 'You', isSelf: true, text: '' };
+  clusterToNameMap = {};
+
+  // Establish initial participant baseline so existing attendees don't trigger "joined" tags
+  sessionAnnouncedJoins.clear();
+  if (speakerInfo?.guests) {
+    for (const g of speakerInfo.guests) {
+      if (g) sessionAnnouncedJoins.add(g.toLowerCase());
+    }
+  }
 
   // Convert any string items to structured TranscriptTurn
   finalTranscripts = Array.isArray(initialTranscripts)
@@ -175,11 +325,11 @@ async function startOffscreenRecording(
       })
     : [];
 
-  // Poll Google Meet tab for participant names every 1.5s
+  // Poll Google Meet tab for participant names every 500ms
   refreshSpeakerInfo();
-  speakerPollInterval = setInterval(refreshSpeakerInfo, 1500);
+  speakerPollInterval = setInterval(refreshSpeakerInfo, 500);
 
-  // 1. Acquire Google Meet Tab Audio via streamId
+  // 1. Acquire Google Meet Tab Audio via streamId (Client channel)
   if (streamId) {
     try {
       try {
@@ -219,7 +369,7 @@ async function startOffscreenRecording(
     }
   }
 
-  // 2. Acquire Microphone Audio (local user)
+  // 2. Acquire Microphone Audio (Support Agent / Local User channel)
   try {
     micStream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -242,25 +392,27 @@ async function startOffscreenRecording(
 
   const sampleRate = audioContext.sampleRate;
 
-  // Analyser nodes for independent volume tracking
+  // Analyser nodes for independent volume tracking (Option 2: separate channel analysis)
   micAnalyser = audioContext.createAnalyser();
   micAnalyser.fftSize = 256;
 
   tabAnalyser = audioContext.createAnalyser();
   tabAnalyser.fftSize = 256;
 
-  // 4. Connect to AssemblyAI Streaming v3 WebSocket
-  const wsUrl = `wss://streaming.assemblyai.com/v3/ws?token=${token}&sample_rate=${sampleRate}&speech_model=universal-3-6-pro`;
+  // 4. Connect to AssemblyAI Streaming v3 WebSocket (with speaker diarization & English-only steering)
+  const host = wsHost || 'streaming.assemblyai.com';
+  const encodedLangCodes = encodeURIComponent(JSON.stringify(['en']));
+  const wsUrl = `wss://${host}/v3/ws?token=${token}&sample_rate=${sampleRate}&speech_model=universal-3-6-pro&speaker_labels=true&speaker_labels_revision_interval_ms=300000&language_codes=${encodedLangCodes}&language_code=en&language_detection=true`;
   socket = new WebSocket(wsUrl);
 
   socket.onopen = () => {
-    console.log('[Offscreen] Connected to AssemblyAI Streaming v3');
+    console.log(`[Offscreen] Connected to AssemblyAI Streaming v3 on ${host}`);
 
     if (!audioContext) return;
 
     processor = audioContext.createScriptProcessor(2048, 1, 1);
 
-    // Route 1: Microphone (Local User)
+    // Route 1: Microphone (Local Support Agent)
     if (micStream && micAnalyser) {
       const micSource = audioContext.createMediaStreamSource(micStream);
       const micGain = audioContext.createGain();
@@ -270,7 +422,7 @@ async function startOffscreenRecording(
       micSource.connect(micAnalyser);
     }
 
-    // Route 2: Google Meet Tab (Guests / Other Participants)
+    // Route 2: Google Meet Tab (Client / Remote Participants)
     if (tabStream && tabAnalyser) {
       const tabSource = audioContext.createMediaStreamSource(tabStream);
       const tabGain = audioContext.createGain();
@@ -279,44 +431,91 @@ async function startOffscreenRecording(
       tabGain.connect(processor);
       tabSource.connect(tabAnalyser);
 
-      // Route tab audio to speakers/headphones so user hears the meeting
+      // Route tab audio to speakers/headphones so agent hears the meeting
       tabSource.connect(audioContext.destination);
     }
 
     processor.onaudioprocess = (e) => {
-      // Stream audio to AssemblyAI
+      // Stream mixed audio to AssemblyAI
       if (socket && socket.readyState === WebSocket.OPEN) {
         const inputData = e.inputBuffer.getChannelData(0);
         const pcmBuffer = floatTo16BitPCM(inputData);
         socket.send(pcmBuffer);
       }
 
-      // Check audio levels to determine who is speaking right now
+      // Check audio levels between the two independent streams
       if (micAnalyser && tabAnalyser) {
         const micVol = getStreamVolume(micAnalyser);
         const tabVol = getStreamVolume(tabAnalyser);
-        const threshold = 0.018;
+        const threshold = 0.015;
+        const now = Date.now();
 
         if (micVol > threshold && micVol > tabVol * 1.05) {
-          // Local user is speaking
+          // Channel 1: Local Agent is speaking on mic
+          const selfDisplayName =
+            speakerInfo.selfName && speakerInfo.selfName.toLowerCase() !== 'you'
+              ? `${speakerInfo.selfName} (You)`
+              : 'You';
+
           currentSpeaker = {
-            name: speakerInfo.selfName ? `${speakerInfo.selfName} (You)` : 'You',
+            name: selfDisplayName,
             isSelf: true,
           };
         } else if (tabVol > threshold && tabVol > micVol * 1.05) {
-          // A guest / other participant is speaking
-          let guestName = speakerInfo.activeSpeaker;
-          if (!guestName && speakerInfo.guests.length === 1) {
-            guestName = speakerInfo.guests[0];
+          // Channel 2: Remote participant(s) speaking on Google Meet tab
+          let matchedClientName: string | null = null;
+
+          // Priority 1: Match against active speaker interval timeline from Google Meet DOM
+          matchedClientName = matchSpeakerFromIntervals(now - 1400, now);
+
+          // Priority 2: Google Meet live active speaker tile
+          if (!matchedClientName && speakerInfo.activeSpeaker) {
+            const lower = speakerInfo.activeSpeaker.toLowerCase();
+            if (lower !== speakerInfo.selfName.toLowerCase() && lower !== 'you') {
+              matchedClientName = speakerInfo.activeSpeaker;
+            }
           }
+
+          // Priority 3: Newly joined participant (joined within last 15 seconds)
+          if (!matchedClientName && speakerInfo.recentJoiners && speakerInfo.recentJoiners.length > 0) {
+            const latest = speakerInfo.recentJoiners.find((j) => now - j.joinedAt < 15000);
+            if (latest && speakerInfo.guests.includes(latest.name)) {
+              matchedClientName = latest.name;
+            }
+          }
+
+          // Priority 4: Exactly 1 guest in the meeting (1-on-1 call guarantee)
+          if (!matchedClientName && speakerInfo.guests.length === 1) {
+            matchedClientName = speakerInfo.guests[0] ?? null;
+          }
+
+          // Priority 5: Multi-person call with recent active guest speaker
+          if (
+            !matchedClientName &&
+            speakerInfo.guests.length > 1 &&
+            lastGuestSpeaker &&
+            speakerInfo.guests.includes(lastGuestSpeaker)
+          ) {
+            matchedClientName = lastGuestSpeaker;
+          }
+
+          if (matchedClientName) {
+            lastGuestSpeaker = matchedClientName;
+          }
+
+          const effectiveName =
+            (matchedClientName && guestOverrides[matchedClientName]) ||
+            matchedClientName ||
+            'Client';
+
           currentSpeaker = {
-            name: guestName || 'Guest',
+            name: effectiveName,
             isSelf: false,
           };
         }
       }
 
-      // Zero out processor output to prevent local microphone feedback
+      // Zero out processor output to prevent local microphone feedback loop
       const outputData = e.outputBuffer.getChannelData(0);
       outputData.fill(0);
     };
@@ -337,31 +536,100 @@ async function startOffscreenRecording(
       if (data.type === 'Turn') {
         const text = data.transcript || '';
         const isEndOfTurn = !!data.end_of_turn;
+        const cluster = data.speaker_label ? String(data.speaker_label) : null;
+        const turnOrder = typeof data.turn_order === 'number' ? data.turn_order : undefined;
+        const detectedLang = data.language_code ? String(data.language_code).toLowerCase() : null;
 
         if (text.trim().length > 0) {
+          // Strict English-Only Enforcement:
+          // 1. If AssemblyAI detects a non-English language (e.g. 'es', 'fr', 'de', 'ur', 'hi'), reject it.
+          // 2. If the text contains non-Latin scripts (e.g. Arabic, Devanagari, Cyrillic, CJK, Hebrew), reject it.
+          if ((detectedLang && detectedLang !== 'en') || !isEnglishTranscript(text)) {
+            console.log(`[Offscreen] Dropped non-English turn (lang=${detectedLang || 'non-Latin'}): "${text}"`);
+            if (!isEndOfTurn) {
+              partialState = {
+                speaker: currentSpeaker.name,
+                isSelf: currentSpeaker.isSelf,
+                text: '',
+              };
+              chrome.runtime?.sendMessage?.({
+                type: 'TRANSCRIPT_UPDATE',
+                partialTranscript: null,
+                finalTranscripts: [...finalTranscripts],
+                isFinal: false,
+                isTabAudioCaptured,
+              }).catch(() => { });
+            }
+            return;
+          }
+
+          const now = Date.now();
+          let turnSpeaker = currentSpeaker.name;
+
+          // For remote attendees (client tab audio), anchor AssemblyAI cluster to Google Meet name
+          if (!currentSpeaker.isSelf) {
+            if (cluster && clusterToNameMap[cluster]) {
+              turnSpeaker = clusterToNameMap[cluster];
+            } else {
+              // Anchor check against Google Meet DOM active speaker
+              const domSpeaker =
+                matchSpeakerFromIntervals(now - 2500, now) ||
+                (speakerInfo.activeSpeaker &&
+                 speakerInfo.activeSpeaker.toLowerCase() !== 'you' &&
+                 speakerInfo.activeSpeaker.toLowerCase() !== speakerInfo.selfName.toLowerCase()
+                  ? speakerInfo.activeSpeaker
+                  : null) ||
+                (speakerInfo.guests.length === 1 ? speakerInfo.guests[0] : null) ||
+                lastGuestSpeaker;
+
+              if (domSpeaker) {
+                turnSpeaker = domSpeaker;
+                if (cluster) {
+                  clusterToNameMap[cluster] = domSpeaker;
+                  // Retroactively upgrade past turns belonging to this cluster from 'Client'/'Guest'
+                  finalTranscripts.forEach((t) => {
+                    if (t.cluster === cluster && !t.isSelf && (t.speaker === 'Client' || t.speaker === 'Guest')) {
+                      t.speaker = guestOverrides[domSpeaker] || domSpeaker;
+                    }
+                  });
+                }
+              } else {
+                // Keep clean "Client" until identified
+                turnSpeaker = 'Client';
+              }
+            }
+          }
+
+          // Apply manual guest name override if configured
+          turnSpeaker = guestOverrides[turnSpeaker] || turnSpeaker;
+
           if (isEndOfTurn) {
             finalTranscripts.push({
               id: `turn_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-              speaker: currentSpeaker.name,
+              speaker: turnSpeaker,
               isSelf: currentSpeaker.isSelf,
               text: text.trim(),
               timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              startMs: now - 3500,
+              endMs: now,
+              cluster: currentSpeaker.isSelf ? undefined : (cluster || undefined),
+              turnOrder,
             });
 
             partialState = {
-              speaker: currentSpeaker.name,
+              speaker: turnSpeaker,
               isSelf: currentSpeaker.isSelf,
               text: '',
             };
           } else {
             partialState = {
-              speaker: currentSpeaker.name,
+              speaker: turnSpeaker,
               isSelf: currentSpeaker.isSelf,
               text: text.trim(),
             };
           }
 
-          // Broadcast to background (for persistence) and to popup/sidepanel
+          // Broadcast to background and UI
           chrome.runtime?.sendMessage?.({
             type: 'TRANSCRIPT_UPDATE',
             partialTranscript: partialState,
@@ -369,6 +637,32 @@ async function startOffscreenRecording(
             isFinal: isEndOfTurn,
             isTabAudioCaptured,
           });
+        }
+      } else if (data.type === 'SpeakerRevision') {
+        // AssemblyAI corrected earlier speaker turn assignments
+        if (Array.isArray(data.revisions) && data.revisions.length > 0) {
+          let anyRevised = false;
+          for (const rev of data.revisions) {
+            const targetTurn = finalTranscripts.find((t) => t.turnOrder === rev.turn_order);
+            if (targetTurn && !targetTurn.isSelf) {
+              const newCluster = rev.speaker_label ? String(rev.speaker_label) : null;
+              if (newCluster && targetTurn.cluster !== newCluster) {
+                targetTurn.cluster = newCluster;
+                const resolvedName = clusterToNameMap[newCluster] || 'Client';
+                targetTurn.speaker = guestOverrides[resolvedName] || resolvedName;
+                anyRevised = true;
+              }
+            }
+          }
+          if (anyRevised) {
+            chrome.runtime?.sendMessage?.({
+              type: 'TRANSCRIPT_UPDATE',
+              partialTranscript: partialState,
+              finalTranscripts: [...finalTranscripts],
+              isFinal: false,
+              isTabAudioCaptured,
+            }).catch(() => {});
+          }
         }
       } else if (data.type === 'Termination') {
         console.log('[Offscreen] AssemblyAI session terminated cleanly');
@@ -400,7 +694,8 @@ chrome.runtime.onMessage.addListener((message: any, _sender: any, sendResponse: 
       message.streamId,
       message.token,
       message.initialTranscripts,
-      message.targetTabId
+      message.targetTabId,
+      message.host
     )
       .then(() => sendResponse({ success: true }))
       .catch((err) => sendResponse({ success: false, error: err.message }));
@@ -417,6 +712,154 @@ chrome.runtime.onMessage.addListener((message: any, _sender: any, sendResponse: 
   if (message.type === 'CLEAR_TRANSCRIPTS') {
     finalTranscripts = [];
     partialState = { speaker: 'You', isSelf: true, text: '' };
+    clusterToNameMap = {};
+    sessionAnnouncedJoins.clear();
+    if (speakerInfo?.guests) {
+      for (const g of speakerInfo.guests) {
+        if (g) sessionAnnouncedJoins.add(g.toLowerCase());
+      }
+    }
+    sendResponse({ success: true });
+    return true;
+  }
+
+  // Handle speaker info dispatch from content script or background
+  if (message.type === 'SPEAKER_INFO_DISPATCH' || message.type === 'SPEAKER_INFO_UPDATED') {
+    if (message.speakerInfo) {
+      applySpeakerInfoUpdate(message.speakerInfo);
+    }
+    return false;
+  }
+
+  // Dynamic participant joined notification (strictly deduplicated)
+  if (message.type === 'PARTICIPANTS_JOINED') {
+    const joined = Array.isArray(message.joined) ? message.joined : [message.name];
+
+    if (isRecording) {
+      let anyAdded = false;
+      for (const name of joined) {
+        if (!name || name.toLowerCase() === 'you' || name.toLowerCase() === speakerInfo.selfName.toLowerCase()) continue;
+        const lower = name.toLowerCase();
+
+        // If already announced during this active recording session, do not repeat tag!
+        if (sessionAnnouncedJoins.has(lower)) {
+          continue;
+        }
+        sessionAnnouncedJoins.add(lower);
+        anyAdded = true;
+
+        finalTranscripts.push({
+          id: `sys_join_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          speaker: 'System',
+          isSelf: false,
+          text: `${name} joined the meeting`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          systemNotice: true,
+        });
+      }
+
+      if (anyAdded) {
+        chrome.runtime?.sendMessage?.({
+          type: 'TRANSCRIPT_UPDATE',
+          partialTranscript: partialState,
+          finalTranscripts: [...finalTranscripts],
+          isFinal: true,
+          isTabAudioCaptured,
+        }).catch(() => {});
+      }
+    }
+    return false;
+  }
+
+  // Dynamic participant left notification (strictly deduplicated)
+  if (message.type === 'PARTICIPANTS_LEFT') {
+    const left = Array.isArray(message.left) ? message.left : [message.name];
+
+    if (isRecording) {
+      let anyLeft = false;
+      for (const name of left) {
+        if (!name || name.toLowerCase() === 'you' || name.toLowerCase() === speakerInfo.selfName.toLowerCase()) continue;
+        const lower = name.toLowerCase();
+
+        // Remove from announced joins so if they re-join later they can be announced
+        sessionAnnouncedJoins.delete(lower);
+        if (lastGuestSpeaker?.toLowerCase() === lower) {
+          lastGuestSpeaker = null;
+        }
+        anyLeft = true;
+
+        finalTranscripts.push({
+          id: `sys_leave_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          speaker: 'System',
+          isSelf: false,
+          text: `${name} left the meeting`,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          systemNotice: true,
+        });
+      }
+
+      if (anyLeft) {
+        chrome.runtime?.sendMessage?.({
+          type: 'TRANSCRIPT_UPDATE',
+          partialTranscript: partialState,
+          finalTranscripts: [...finalTranscripts],
+          isFinal: true,
+          isTabAudioCaptured,
+        }).catch(() => {});
+      }
+    }
+    return false;
+  }
+
+  // Manual guest name override from user in UI
+  if (message.type === 'SET_GUEST_NAME_OFFSCREEN') {
+    const originalName = message.originalName?.trim();
+    const newName = message.name?.trim();
+
+    if (newName) {
+      if (originalName) {
+        guestOverrides[originalName] = newName;
+        for (const [cluster, mapped] of Object.entries(clusterToNameMap)) {
+          if (mapped === originalName) {
+            clusterToNameMap[cluster] = newName;
+          }
+        }
+      } else if (speakerInfo.guests.length === 1 && speakerInfo.guests[0]) {
+        guestOverrides[speakerInfo.guests[0]] = newName;
+      } else if (lastGuestSpeaker) {
+        guestOverrides[lastGuestSpeaker] = newName;
+      }
+
+      finalTranscripts = finalTranscripts.map((turn) => {
+        if (!turn.isSelf && !turn.systemNotice) {
+          if (originalName && turn.speaker === originalName) {
+            return { ...turn, speaker: newName };
+          } else if (
+            !originalName &&
+            (turn.speaker === 'Guest' || turn.speaker === 'Client' || turn.speaker === lastGuestSpeaker)
+          ) {
+            return { ...turn, speaker: newName };
+          }
+        }
+        return turn;
+      });
+
+      if (partialState && !partialState.isSelf) {
+        if (originalName && partialState.speaker === originalName) {
+          partialState = { ...partialState, speaker: newName };
+        } else if (!originalName) {
+          partialState = { ...partialState, speaker: newName };
+        }
+      }
+
+      chrome.runtime?.sendMessage?.({
+        type: 'TRANSCRIPT_UPDATE',
+        partialTranscript: partialState,
+        finalTranscripts: [...finalTranscripts],
+        isFinal: false,
+        isTabAudioCaptured,
+      }).catch(() => {});
+    }
     sendResponse({ success: true });
     return true;
   }
@@ -427,6 +870,7 @@ chrome.runtime.onMessage.addListener((message: any, _sender: any, sendResponse: 
       isTabAudioCaptured,
       partialTranscript: partialState,
       finalTranscripts,
+      speakerInfo,
     });
     return true;
   }
@@ -434,4 +878,4 @@ chrome.runtime.onMessage.addListener((message: any, _sender: any, sendResponse: 
   return false;
 });
 
-console.log('[Offscreen] MeetAnalyze offscreen audio processor with speaker diarization loaded.');
+console.log('[Offscreen] MeetAnalyze offscreen audio processor with hybrid dual-stream speaker diarization loaded.');

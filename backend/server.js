@@ -1,3 +1,5 @@
+require('./src/utils/dns-resolver');
+
 const fastify = require('fastify')({
     logger: true
 })

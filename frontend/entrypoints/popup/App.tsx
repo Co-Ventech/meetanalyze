@@ -6,6 +6,9 @@ import { useRealtimeTranscription } from './hooks/useRealtimeTranscription';
 function App() {
   const [meetStatus, setMeetStatus] = useState('Checking Google Meet...');
   const [isMeetConnected, setIsMeetConnected] = useState(false);
+  const [joinToast, setJoinToast] = useState<string | null>(null);
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const [insightMessage, setInsightMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const {
     isRecording,
@@ -14,12 +17,14 @@ function App() {
     isPermissionRequired,
     partialTranscript,
     finalTranscripts,
+    speakerInfo,
     error,
     startRecording,
     stopRecording,
     clearTranscripts,
+    setGuestName,
   } = useRealtimeTranscription({
-    apiBaseUrl: (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:5000',
+    apiBaseUrl: (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:2000',
   });
 
   const checkMeet = async () => {
@@ -35,7 +40,7 @@ function App() {
 
   const openPermissionTab = () => {
     try {
-      const url = browser.runtime.getURL('/permission.html');
+      const url = browser.runtime.getURL('/permission.html' as any);
       browser.tabs.create({ url });
     } catch {
       window.open('/permission.html', '_blank');
@@ -54,9 +59,126 @@ function App() {
     }
   };
 
+  const handleEditGuest = (targetName?: string) => {
+    const currentName = targetName || (speakerInfo?.guests?.length ? speakerInfo.guests[0] : '');
+    const newName = window.prompt(`Rename or correct participant name ("${currentName || 'Client'}"):`, currentName || 'Client');
+    if (newName && newName.trim()) {
+      setGuestName(newName.trim(), targetName);
+    }
+  };
+
   useEffect(() => {
     checkMeet();
   }, []);
+
+  useEffect(() => {
+    if (speakerInfo?.newlyJoined && speakerInfo.newlyJoined.length > 0) {
+      const latest = speakerInfo.newlyJoined[speakerInfo.newlyJoined.length - 1];
+      if (latest) {
+        setJoinToast(latest);
+        const timer = setTimeout(() => {
+          setJoinToast(null);
+        }, 4000);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [speakerInfo?.newlyJoined]);
+
+  const handleShowMeetingInsight = async () => {
+    try {
+      setInsightMessage(null);
+
+      // Collect complete transcripts
+      const activeTranscripts = [...finalTranscripts];
+      if (partialTranscript?.text?.trim()) {
+        activeTranscripts.push({
+          id: `partial_${Date.now()}`,
+          speaker: partialTranscript.speaker,
+          isSelf: partialTranscript.isSelf,
+          text: partialTranscript.text,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        });
+      }
+
+      if (activeTranscripts.length === 0) {
+        window.alert('Please record or enter a meeting transcript first to generate meeting insights.');
+        return;
+      }
+
+      setIsSummarizing(true);
+
+      const apiBaseUrl = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:2000';
+      let response = await fetch(`${apiBaseUrl}/api/v1/summarize`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          transcript: activeTranscripts,
+        }),
+      });
+
+      // Fallback in case of route prefix differences
+      if (response.status === 404) {
+        response = await fetch(`${apiBaseUrl}/api/v1/transcription/summarize`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            transcript: activeTranscripts,
+          }),
+        });
+      }
+
+      if (!response.ok) {
+        let errorMsg = `Server returned HTTP ${response.status}`;
+        try {
+          const errData = await response.json();
+          if (errData?.message) errorMsg = errData.message;
+        } catch {}
+        throw new Error(errorMsg);
+      }
+
+      // Download doc file blob
+      const blob = await response.blob();
+      const contentDisposition = response.headers.get('content-disposition') || '';
+      let filename = 'Meeting_Insight_Report.doc';
+      const filenameMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+      if (filenameMatch && filenameMatch[1]) {
+        filename = filenameMatch[1];
+      }
+
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(downloadUrl);
+
+      setInsightMessage({
+        type: 'success',
+        text: `Downloaded ${filename}`,
+      });
+      setTimeout(() => setInsightMessage(null), 7000);
+    } catch (err: any) {
+      console.error('[MeetAnalyze] Insight generation failed:', err);
+      setInsightMessage({
+        type: 'error',
+        text: err?.message || 'Failed to generate meeting insight document.',
+      });
+    } finally {
+      setIsSummarizing(false);
+    }
+  };
+
+  const guestDisplayName = speakerInfo?.guests?.length
+    ? speakerInfo.guests.join(', ')
+    : isRecording
+    ? (isTabAudioCaptured ? 'Listening for Client...' : 'Tab audio inactive')
+    : 'Client';
 
   return (
     <div className="w-full max-w-[420px] min-w-[340px] p-4 bg-slate-900 text-white font-sans rounded-lg shadow-xl flex flex-col gap-3 min-h-[490px]">
@@ -64,7 +186,7 @@ function App() {
       <div className="flex items-center justify-between border-b border-slate-800 pb-3">
         <div>
           <h1 className="text-lg font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
-            MeetAnalyze Live STT
+            MeetAnalyze
           </h1>
           <p className="text-xs text-slate-400 flex items-center gap-1.5 mt-0.5">
             <span
@@ -137,7 +259,7 @@ function App() {
         >
           <span>🔊</span>
           <span>
-            Guest Audio:{' '}
+            Client Audio:{' '}
             {isRecording
               ? isTabAudioCaptured
                 ? 'Active'
@@ -146,6 +268,92 @@ function App() {
               ? 'Ready'
               : 'Off'}
           </span>
+        </div>
+
+        <div
+          className="flex items-center justify-center gap-1 py-1 px-2 rounded border bg-slate-950 border-slate-800 text-slate-400 text-[10px]"
+          title="Live transcription restricted to English only"
+        >
+          <span>🌐</span>
+          <span>EN</span>
+        </div>
+      </div>
+
+      {/* Dynamic New Joiner Banner */}
+      {joinToast && (
+        <div className="p-1.5 bg-indigo-950/90 border border-indigo-700/80 rounded text-[11px] text-indigo-200 flex items-center justify-between shadow transition-all">
+          <div className="flex items-center gap-1.5">
+            <span>👋</span>
+            <span>
+              <strong>{joinToast}</strong> joined the meeting
+            </span>
+          </div>
+          <button
+            onClick={() => setJoinToast(null)}
+            className="text-[10px] text-indigo-400 hover:text-white px-1 cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Dynamic Call Participants Roster */}
+      <div className="bg-slate-950/70 border border-slate-800/80 rounded-md p-2 text-[11px] flex flex-col gap-1.5">
+        <div className="flex items-center justify-between">
+          <span className="text-slate-400 font-medium text-[10px] uppercase tracking-wider">
+            Call Participants ({1 + (speakerInfo?.guests?.length || 0)}):
+          </span>
+          <span className="text-[10px] text-slate-500">
+            {speakerInfo?.activeSpeaker ? `🗣️ ${speakerInfo.activeSpeaker} speaking` : 'Listening...'}
+          </span>
+        </div>
+
+        <div className="flex items-center flex-wrap gap-1.5">
+          {/* Local User Chip */}
+          <span
+            className="px-2 py-0.5 rounded bg-blue-950/80 border border-blue-800/80 text-blue-300 flex items-center gap-1 text-[11px]"
+            title={`Local Speaker: ${speakerInfo?.selfName || 'You'}`}
+          >
+            <span>🎙️</span>
+            <span>{speakerInfo?.selfName && speakerInfo.selfName !== 'You' ? `${speakerInfo.selfName} (You)` : 'You'}</span>
+          </span>
+
+          {/* Guest Chips */}
+          {speakerInfo?.guests && speakerInfo.guests.length > 0 ? (
+            speakerInfo.guests.map((guest) => {
+              const isCurrentlySpeaking =
+                speakerInfo.activeSpeaker?.toLowerCase() === guest.toLowerCase();
+              return (
+                <button
+                  key={guest}
+                  onClick={() => handleEditGuest(guest)}
+                  className={`px-2 py-0.5 rounded border text-[11px] flex items-center gap-1 transition-all cursor-pointer ${
+                    isCurrentlySpeaking
+                      ? 'bg-emerald-900/80 border-emerald-500 text-emerald-200 ring-1 ring-emerald-400/50 shadow-sm'
+                      : 'bg-emerald-950/70 border-emerald-800/70 text-emerald-300 hover:bg-emerald-900/50'
+                  }`}
+                  title={`Click to rename ${guest}`}
+                >
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      isCurrentlySpeaking ? 'bg-emerald-400 animate-ping' : 'bg-emerald-500'
+                    }`}
+                  />
+                  <span>🔊 {guest}</span>
+                  <span className="text-[9px] text-emerald-500 hover:text-white">✏️</span>
+                </button>
+              );
+            })
+          ) : (
+            <span className="text-[11px] text-slate-500 italic flex items-center gap-1 px-1">
+              <span>🔊</span>
+              <span>
+                {isRecording
+                  ? (isTabAudioCaptured ? 'Waiting for participants to speak...' : 'Tab audio inactive')
+                  : 'Ready for meeting'}
+              </span>
+            </span>
+          )}
         </div>
       </div>
 
@@ -197,7 +405,47 @@ function App() {
         </button>
       </div>
 
-      {/* Error Banner (non-permission errors) */}
+      {/* Show Meeting Insight Button */}
+      <button
+        onClick={handleShowMeetingInsight}
+        disabled={isSummarizing || (finalTranscripts.length === 0 && !partialTranscript?.text)}
+        className="w-full py-2 px-3 bg-gradient-to-r from-indigo-600 via-blue-600 to-indigo-700 hover:from-indigo-500 hover:to-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium text-xs rounded-md transition-all flex items-center justify-center gap-1.5 shadow cursor-pointer"
+        title="Analyze sales performance against evaluation rubric and download Word (.doc) report"
+      >
+        {isSummarizing ? (
+          <>
+            <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+            <span>Analyzing & Generating Insight Doc...</span>
+          </>
+        ) : (
+          <>
+            <span>📊</span>
+            <span>Show Meeting Insight</span>
+            <span className="text-[10px] bg-black/25 px-1.5 py-0.5 rounded opacity-80 font-mono">.doc</span>
+          </>
+        )}
+      </button>
+
+      {/* Insight Status Alert */}
+      {insightMessage && (
+        <div
+          className={`p-2 rounded text-xs flex items-center justify-between gap-1.5 ${
+            insightMessage.type === 'success'
+              ? 'bg-emerald-950/80 border border-emerald-700/80 text-emerald-200'
+              : 'bg-rose-950/80 border border-rose-800/80 text-rose-200'
+          }`}
+        >
+          <span className="truncate">{insightMessage.type === 'success' ? '✅' : '⚠️'} {insightMessage.text}</span>
+          <button
+            onClick={() => setInsightMessage(null)}
+            className="text-[10px] text-slate-400 hover:text-white px-1 shrink-0 cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Error Banner */}
       {error && !isPermissionRequired && (
         <div className="p-2.5 bg-rose-950/80 border border-rose-800/80 rounded text-xs text-rose-200">
           <strong>Error:</strong> {error}
@@ -223,31 +471,57 @@ function App() {
       <div className="flex-1 bg-slate-950/90 border border-slate-800 rounded-md p-3 overflow-y-auto max-h-[260px] flex flex-col gap-2.5 select-text text-xs leading-relaxed">
         {finalTranscripts.length === 0 && !partialTranscript?.text && (
           <div className="m-auto text-center text-slate-500 text-xs py-8">
-            Click <strong>Start Live Transcription</strong> while in Google Meet. Both your voice and other participants will be transcribed with speaker identification.
+            Click <strong>Start Live Transcription</strong> while in Google Meet. Both your voice and other participants will be transcribed with distinct speaker identification.
           </div>
         )}
 
-        {finalTranscripts.map((turn) => (
-          <div
-            key={turn.id}
-            className={`p-2.5 rounded-lg border flex flex-col gap-1 transition-all ${
-              turn.isSelf
-                ? 'bg-blue-950/30 border-blue-800/60 self-end max-w-[90%]'
-                : 'bg-emerald-950/30 border-emerald-800/60 self-start max-w-[90%]'
-            }`}
-          >
-            <div className="flex items-center justify-between gap-3 text-[11px] font-medium border-b border-white/5 pb-1">
-              <span className={`flex items-center gap-1 font-semibold ${turn.isSelf ? 'text-blue-300' : 'text-emerald-300'}`}>
-                <span>{turn.isSelf ? '🎙️' : '🔊'}</span>
-                <span>{turn.speaker}</span>
-              </span>
-              {turn.timestamp && (
-                <span className="text-[10px] text-slate-500 font-normal">{turn.timestamp}</span>
-              )}
+        {finalTranscripts.map((turn) => {
+          if (turn.systemNotice) {
+            return (
+              <div
+                key={turn.id}
+                className="self-center my-0.5 px-2.5 py-0.5 bg-slate-800/60 border border-slate-700/50 rounded-full text-[10px] text-slate-400 flex items-center gap-1.5 shadow-sm"
+              >
+                <span>👋</span>
+                <span className="font-medium text-slate-300">{turn.text}</span>
+                {turn.timestamp && (
+                  <span className="text-[9px] text-slate-500">({turn.timestamp})</span>
+                )}
+              </div>
+            );
+          }
+
+          return (
+            <div
+              key={turn.id}
+              className={`p-2.5 rounded-lg border flex flex-col gap-1 transition-all ${
+                turn.isSelf
+                  ? 'bg-blue-950/30 border-blue-800/60 self-end max-w-[90%]'
+                  : 'bg-emerald-950/30 border-emerald-800/60 self-start max-w-[90%]'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-3 text-[11px] font-medium border-b border-white/5 pb-1">
+                <span
+                  onClick={!turn.isSelf ? () => handleEditGuest(turn.speaker) : undefined}
+                  className={`flex items-center gap-1 font-semibold ${
+                    turn.isSelf ? 'text-blue-300' : 'text-emerald-300 cursor-pointer hover:underline'
+                  }`}
+                  title={!turn.isSelf ? `Click to rename ${turn.speaker}` : undefined}
+                >
+                  <span>{turn.isSelf ? '🎙️' : '🔊'}</span>
+                  <span>{turn.speaker}</span>
+                  {!turn.isSelf && (
+                    <span className="text-[10px] text-slate-500 hover:text-amber-400 font-normal">✏️</span>
+                  )}
+                </span>
+                {turn.timestamp && (
+                  <span className="text-[10px] text-slate-500 font-normal">{turn.timestamp}</span>
+                )}
+              </div>
+              <p className="text-slate-200 text-xs pt-0.5 leading-relaxed">{turn.text}</p>
             </div>
-            <p className="text-slate-200 text-xs pt-0.5 leading-relaxed">{turn.text}</p>
-          </div>
-        ))}
+          );
+        })}
 
         {/* Real-time partial transcript in-flight */}
         {partialTranscript?.text && (
