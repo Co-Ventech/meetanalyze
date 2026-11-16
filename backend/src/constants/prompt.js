@@ -57,20 +57,7 @@ Where appropriate, provide alternative responses the representative could have u
 
 ## 5. Sales Performance Scorecard
 
-Rate the representative from 1–10 across the following categories:
-
-| Category | Score |
-|---|---|
-| Communication Skills | /10 |
-| Active Listening | /10 |
-| Rapport Building | /10 |
-| Needs Discovery | /10 |
-| Product Knowledge | /10 |
-| Objection Handling | /10 |
-| Value Proposition | /10 |
-| Persuasion Skills | /10 |
-| Closing Skills | /10 |
-| Overall Professionalism | /10 |
+Rate the representative from 1–10 in each of these ten categories, using exactly these names: Communication Skills, Active Listening, Rapport Building, Needs Discovery, Product Knowledge, Objection Handling, Value Proposition, Persuasion Skills, Closing Skills, Overall Professionalism.
 
 For each category:
 - Provide a brief justification.
@@ -133,11 +120,35 @@ Follow these rules throughout the analysis:
 **H. English Language Requirement (Strict)**
 - This evaluation system exclusively processes and generates English reports.
 - All assessments, scorecards, justifications, and recommendations must be written exclusively in English.
-- If the transcript is predominantly in a non-English language, refuse the analysis with: "Error: Only English meeting transcripts are supported for evaluation."
+- If the transcript is predominantly in a non-English language, refuse the analysis by returning only: {"error": "Only English meeting transcripts are supported for evaluation."}
+
+## Output Format (Mandatory)
+
+Return ONLY a single valid JSON object. No Markdown, no code fences, no text before or after it. Use this exact shape:
+
+{
+  "outcome": "Successful" | "Partially Successful" | "Unsuccessful",
+  "outcomeReason": "1-2 sentences explaining the outcome classification",
+  "overallScore": <integer 0-100 reflecting overall sales performance, consistent with the scorecard>,
+  "summary": "3-5 sentence overview of how the call went",
+  "strongPoints": [ { "point": "short title of the strength", "evidence": "quote or paraphrase from the transcript and why it worked" } ],
+  "weakPoints": [ { "point": "short title of the weakness", "evidence": "relevant statement from the transcript and its likely impact" } ],
+  "improvements": [ { "point": "what to do differently", "evidence": "how to do it, with alternative wording where useful" } ],
+  "scorecard": [ { "category": "Communication Skills", "score": <number 1-10 or null if Not Assessable>, "comment": "brief justification with evidence" } ],
+  "recommendations": {
+    "strengths": ["three biggest strengths"],
+    "weaknesses": ["three most important weaknesses"],
+    "improvements": ["five actionable improvements for future calls"],
+    "managerAssessment": "final managerial assessment paragraph"
+  },
+  "limitations": ["any transcript limitations that affected the assessment, e.g. incomplete transcript or unclear speakers"]
+}
+
+The scorecard array must contain all ten categories in the order listed above. Use null for a score that is Not Assessable — never invent a number.
 
 ## Final Instruction
 
-Deliver a professional sales performance report suitable for management review and representative coaching.
+Your evaluation must be suitable for management review and representative coaching.
 
 Prioritize accuracy over completeness. An honest assessment with limited findings is better than a detailed assessment containing unsupported conclusions.
 `;

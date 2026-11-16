@@ -6,15 +6,14 @@ export default defineConfig({
   modules: ['@wxt-dev/module-react'],
   manifest: {
     name: 'MeetAnalyze',
-    description: 'Real-time meeting audio capture and transcription',
-    permissions: ['activeTab', 'tabs', 'tabCapture', 'offscreen', 'storage', 'sidePanel'],
+    description: 'Captures Google Meet captions with speaker names and analyses how the meeting went',
+    permissions: ['activeTab', 'tabs', 'storage', 'sidePanel'],
     host_permissions: [
       '*://meet.google.com/*',
       'https://meet.google.com/*',
       'http://localhost:5000/*',
       'http://127.0.0.1:5000/*',
       'https://*.vercel.app/*',
-      'https://streaming.assemblyai.com/*',
     ],
   },
   vite: () => ({

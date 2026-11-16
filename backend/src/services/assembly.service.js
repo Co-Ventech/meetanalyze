@@ -1,64 +1,118 @@
 require('../utils/dns-resolver');
 
-/**
- * AssemblyAI Service
- * Handles temporary token generation for client-side Real-Time Streaming v3.
- * Supports automatic fallback across regional endpoints (Global, US, EU)
- * to guard against local DNS resolution failures.
- */
-const getTemporaryToken = async (expiresInSeconds = 480) => {
-  const apiKey = (process.env.ASSEMBLYAI_API_KEY || '').trim();
-  if (!apiKey) {
-    throw new Error('ASSEMBLYAI_API_KEY is not defined in backend/.env');
-  }
-
-  // Endpoints to try in order of priority
-  const candidateHosts = [
-    'streaming.assemblyai.com',
-    'streaming.us.assemblyai.com',
-    'streaming.eu.assemblyai.com',
-  ];
-
-  let lastError = null;
-
-  for (const host of candidateHosts) {
-    try {
-      const url = `https://${host}/v3/token?expires_in_seconds=${expiresInSeconds}`;
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          Authorization: apiKey,
-        },
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`AssemblyAI token request to ${host} failed (HTTP ${response.status}): ${errorText}`);
-      }
-
-      const data = await response.json();
-      if (!data?.token) {
-        throw new Error(`AssemblyAI token response from ${host} missing token field`);
-      }
-
-      return {
-        token: data.token,
-        host,
-      };
-    } catch (err) {
-      lastError = err;
-      console.warn(`[AssemblyAI] Token generation attempt on ${host} failed (${err.code || err.message}). Trying fallback...`);
-    }
-  }
-
-  throw lastError || new Error('Failed to generate AssemblyAI streaming token on all endpoints');
-};
-
 const { SALES_PROMPT } = require('../constants/prompt');
 
 /**
- * Generate meeting performance insight using AssemblyAI LLM Gateway and the SALES_PROMPT.
- * Evaluates the sales call across all 7 assessment categories and guardrails.
+ * AssemblyAI LLM Gateway service.
+ * Transcription now comes from Google Meet captions; AssemblyAI is only used for the LLM analysis.
+ */
+
+const GATEWAYS = [
+  'https://llm-gateway.assemblyai.com/v1/chat/completions',
+  'https://llm-gateway.eu.assemblyai.com/v1/chat/completions',
+];
+
+// Primary model verified for this account first, followed by standard fallback models
+const MODELS = [
+  'qwen3.5-4b-32k-fast',
+  'claude-sonnet-4-6',
+  'gemini-2.5-flash',
+  'gpt-4.1',
+];
+
+const OUTCOMES = ['Successful', 'Partially Successful', 'Unsuccessful'];
+
+// The gateway defaults to max_tokens=1000, which truncates the full evaluation mid-JSON.
+const MAX_TOKENS = 6000;
+// Small models occasionally emit slightly malformed JSON; retry the same model this many times.
+const ATTEMPTS_PER_MODEL = 2;
+
+const asString = (v) => (typeof v === 'string' ? v.trim() : v == null ? '' : String(v));
+const asStringArray = (v) => (Array.isArray(v) ? v.map(asString).filter(Boolean) : []);
+const asEvidenceArray = (v) =>
+  (Array.isArray(v) ? v : [])
+    .map((item) => (typeof item === 'string'
+      ? { point: item.trim(), evidence: '' }
+      : { point: asString(item?.point), evidence: asString(item?.evidence) }))
+    .filter((item) => item.point);
+
+const clampScore = (v, max) => {
+  const n = typeof v === 'number' ? v : parseFloat(v);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(max, Math.round(n * 10) / 10));
+};
+
+/** Extract the first JSON object from a model reply (handles ```json fences and stray prose). */
+const extractJson = (content) => {
+  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const body = fenced ? fenced[1] : content;
+  const start = body.indexOf('{');
+  const end = body.lastIndexOf('}');
+  if (start === -1 || end <= start) throw new Error('Model reply did not contain a JSON object');
+  const json = body.slice(start, end + 1);
+  try {
+    return JSON.parse(json);
+  } catch (err) {
+    // Light repair for common small-model mistakes: trailing commas and smart quotes as delimiters
+    const repaired = json
+      .replace(/,\s*([}\]])/g, '$1')
+      .replace(/[“”]/g, '"');
+    try {
+      return JSON.parse(repaired);
+    } catch {
+      throw err;
+    }
+  }
+};
+
+/** Validate and normalise the model's JSON into the shape the dashboard expects. */
+const normalizeInsight = (raw) => {
+  if (raw?.error) throw new Error(asString(raw.error));
+
+  const scorecard = (Array.isArray(raw?.scorecard) ? raw.scorecard : [])
+    .map((row) => ({
+      category: asString(row?.category),
+      score: clampScore(row?.score, 10),
+      comment: asString(row?.comment),
+    }))
+    .filter((row) => row.category);
+
+  if (!scorecard.length && !asString(raw?.summary)) {
+    throw new Error('Model reply was missing the summary and scorecard');
+  }
+
+  const scored = scorecard.filter((row) => row.score !== null);
+  let overallScore = clampScore(raw?.overallScore, 100);
+  if (overallScore === null && scored.length) {
+    overallScore = Math.round((scored.reduce((a, r) => a + r.score, 0) / scored.length) * 10);
+  }
+
+  const outcome = OUTCOMES.find((o) => o.toLowerCase() === asString(raw?.outcome).toLowerCase()) || null;
+  const rec = raw?.recommendations || {};
+
+  return {
+    outcome,
+    outcomeReason: asString(raw?.outcomeReason),
+    overallScore,
+    summary: asString(raw?.summary),
+    strongPoints: asEvidenceArray(raw?.strongPoints),
+    weakPoints: asEvidenceArray(raw?.weakPoints),
+    improvements: asEvidenceArray(raw?.improvements),
+    scorecard,
+    recommendations: {
+      strengths: asStringArray(rec.strengths),
+      weaknesses: asStringArray(rec.weaknesses),
+      improvements: asStringArray(rec.improvements),
+      managerAssessment: asString(rec.managerAssessment),
+    },
+    limitations: asStringArray(raw?.limitations),
+  };
+};
+
+/**
+ * Generate a structured sales-call evaluation using the AssemblyAI LLM Gateway.
+ * Tries each gateway/model pair until one returns valid JSON.
+ * @returns {Promise<{model: string, insight: object}>}
  */
 const generateSalesCallInsight = async (transcriptText) => {
   const apiKey = (process.env.ASSEMBLYAI_API_KEY || '').trim();
@@ -70,75 +124,65 @@ const generateSalesCallInsight = async (transcriptText) => {
     throw new Error('Transcript text is required to generate meeting insights.');
   }
 
-  // Gateway endpoints (Global / US primary)
-  const candidateGateways = [
-    'https://llm-gateway.assemblyai.com/v1/chat/completions',
-    'https://llm-gateway.eu.assemblyai.com/v1/chat/completions',
-  ];
-
-  // Primary model verified for this account first, followed by standard fallback models
-  const candidateModels = [
-    'qwen3.5-4b-32k-fast',
-    'claude-sonnet-4-6',
-    'gemini-2.5-flash',
-    'gpt-4.1',
-  ];
-
   const attemptErrors = [];
 
-  for (const gatewayUrl of candidateGateways) {
-    for (const model of candidateModels) {
-      try {
-        const response = await fetch(gatewayUrl, {
-          method: 'POST',
-          headers: {
-            'Authorization': apiKey,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model,
-            messages: [
-              {
-                role: 'system',
-                content: SALES_PROMPT,
-              },
-              {
-                role: 'user',
-                content: `Please evaluate this sales call transcript according to the specified instructions:\n\n<transcript>\n${transcriptText}\n</transcript>`,
-              },
-            ],
-          }),
-        });
+  for (const gatewayUrl of GATEWAYS) {
+    for (const model of MODELS) {
+      for (let attempt = 1; attempt <= ATTEMPTS_PER_MODEL; attempt++) {
+        let retryable = false;
+        try {
+          const response = await fetch(gatewayUrl, {
+            method: 'POST',
+            headers: {
+              'Authorization': apiKey,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              model,
+              max_tokens: MAX_TOKENS,
+              temperature: 0.2,
+              messages: [
+                { role: 'system', content: SALES_PROMPT },
+                {
+                  role: 'user',
+                  content: `Evaluate this sales call transcript and reply with the JSON object only:\n\n<transcript>\n${transcriptText}\n</transcript>`,
+                },
+              ],
+            }),
+          });
 
-        if (!response.ok) {
-          const errText = await response.text();
-          throw new Error(`HTTP ${response.status}: ${errText}`);
+          if (!response.ok) {
+            const errText = await response.text();
+            // 4xx = this model/gateway is not available to the account; don't retry it
+            throw new Error(`HTTP ${response.status}: ${errText}`);
+          }
+
+          const data = await response.json();
+          const choice = data?.choices?.[0];
+          const content = choice?.message?.content;
+          retryable = true;
+          if (!content || !content.trim()) {
+            throw new Error(`Empty content returned by model ${model}`);
+          }
+          if (choice.finish_reason === 'length') {
+            throw new Error(`Reply from ${model} was cut off at the token limit`);
+          }
+
+          return { model, insight: normalizeInsight(extractJson(content)) };
+        } catch (err) {
+          attemptErrors.push(`[${model} @ ${gatewayUrl} #${attempt}]: ${err.message}`);
+          console.warn(`[AssemblyAI] LLM attempt ${attempt} with ${model} on ${gatewayUrl} failed (${err.message}).`);
+          if (!retryable) break;
         }
-
-        const data = await response.json();
-        const content = data?.choices?.[0]?.message?.content;
-        if (!content || !content.trim()) {
-          throw new Error(`Empty content returned by model ${model}`);
-        }
-
-        return {
-          model,
-          content: content.trim(),
-        };
-      } catch (err) {
-        attemptErrors.push(`[${model} @ ${gatewayUrl}]: ${err.message}`);
-        console.warn(`[AssemblyAI] LLM attempt with ${model} on ${gatewayUrl} failed (${err.message}). Trying next candidate...`);
       }
     }
   }
 
-  const detailedSummary = attemptErrors.length > 0
-    ? attemptErrors.join('; ')
-    : 'No response received from any LLM Gateway candidate';
-  throw new Error(`Failed to generate sales call insight on all LLM Gateway candidates: ${detailedSummary}`);
+  throw new Error(`Failed to generate sales call insight on all LLM Gateway candidates: ${attemptErrors.join('; ')}`);
 };
 
 module.exports = {
-  getTemporaryToken,
   generateSalesCallInsight,
+  normalizeInsight,
+  extractJson,
 };

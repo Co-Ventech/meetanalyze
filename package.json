@@ -8,17 +8,19 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "dev": "concurrently -n \"frontend,backend\" -c \"cyan,magenta\" \"npm run dev:frontend\" \"npm run dev:backend\"",
+    "dev": "concurrently -n \"frontend,backend,dashboard\" -c \"cyan,magenta,green\" \"npm run dev:frontend\" \"npm run dev:backend\" \"npm run dev:dashboard\"",
     "dev:frontend": "npm run dev --prefix frontend",
     "dev:backend": "npm run dev --prefix backend",
+    "dev:dashboard": "npm run dev --prefix dashboard",
     "start:backend": "npm run start --prefix backend",
     "build": "npm run build --prefix frontend",
     "build:frontend": "npm run build --prefix frontend",
+    "build:dashboard": "npm run build --prefix dashboard",
     "zip": "npm run zip --prefix frontend",
     "zip:frontend": "npm run zip --prefix frontend",
     "zip:firefox": "npm run zip:firefox --prefix frontend",
     "compile:frontend": "npm run compile --prefix frontend",
-    "install:all": "npm install --prefix frontend && npm install --prefix backend",
+    "install:all": "npm install --prefix frontend && npm install --prefix backend && npm install --prefix dashboard",
     "install:backend": "npm install --prefix backend",
     "install:frontend": "npm install --prefix frontend"
   },

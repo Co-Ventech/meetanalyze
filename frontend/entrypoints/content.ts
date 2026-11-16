@@ -6,11 +6,12 @@ import {
   JOIN_NOTIFICATION_PATTERNS,
   LEAVE_NOTIFICATION_PATTERNS,
 } from './utils/meet-selectors';
+import { createCaptionCapture, getMeetCode } from './utils/caption-capture';
 
 export default defineContentScript({
   matches: ['*://meet.google.com/*'],
   main() {
-    console.log('[MeetAnalyze] Google Meet Speaker Detection content script loaded.');
+    console.log('[MeetAnalyze] Google Meet caption capture content script loaded.');
 
     // Cache the detected real name of the local user so it persists across DOM shifts
     let cachedSelfName = '';
@@ -607,74 +608,19 @@ export default defineContentScript({
       };
     }
 
-    // Broadcast speaker info update to extension background & offscreen
-    function broadcastSpeakerInfo() {
-      const info = collectSpeakerInfo();
-
-      const hasChanged =
-        info.selfName !== cachedSpeakerInfo.selfName ||
-        info.activeSpeaker !== cachedSpeakerInfo.activeSpeaker ||
-        info.guests.length !== cachedSpeakerInfo.guests.length ||
-        info.allParticipants.length !== cachedSpeakerInfo.allParticipants.length ||
-        (info.intervals && info.intervals.length !== cachedSpeakerInfo.intervals?.length) ||
-        (info.newlyJoined && info.newlyJoined.length > 0) ||
-        (info.leftParticipants && info.leftParticipants.length > 0) ||
-        !info.guests.every((g, i) => g === cachedSpeakerInfo.guests[i]);
-
-      cachedSpeakerInfo = info;
-
-      if (hasChanged) {
-        try {
-          browser.runtime?.sendMessage?.({
-            type: 'SPEAKER_INFO_UPDATED',
-            speakerInfo: info,
-          }).catch(() => { });
-
-          if (info.newlyJoined && info.newlyJoined.length > 0) {
-            browser.runtime?.sendMessage?.({
-              type: 'PARTICIPANTS_JOINED',
-              joined: info.newlyJoined,
-              roster: info.guests,
-            }).catch(() => { });
-          }
-
-          if (info.leftParticipants && info.leftParticipants.length > 0) {
-            browser.runtime?.sendMessage?.({
-              type: 'PARTICIPANTS_LEFT',
-              left: info.leftParticipants,
-              roster: info.guests,
-            }).catch(() => { });
-          }
-        } catch {
-          // Extension context reloading
-        }
-      }
-    }
-
-    // Periodically sync and observe DOM mutations
-    const pollInterval = setInterval(broadcastSpeakerInfo, 600);
-
-    // MutationObserver to catch immediate active speaker changes & new participants joining
-    let debounceTimer: any = null;
-    const observer = new MutationObserver((mutations) => {
-      const hasStructureChange = mutations.some((m) => m.type === 'childList');
-      const delay = hasStructureChange ? 80 : 180;
-
-      if (debounceTimer) clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(broadcastSpeakerInfo, delay);
+    // Caption capture: Google Meet's live captions are the transcript source (speaker name + words)
+    const captions = createCaptionCapture({
+      getSelfName,
+      cleanName,
+      isInvalidName,
+      getParticipantNames: () => collectSpeakerInfo().allParticipants.filter((n) => n && n !== 'You'),
     });
-
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['aria-label', 'data-is-speaking', 'class', 'style', 'data-self-name'],
-    });
+    captions.restore();
 
     // Handle incoming messages
     browser.runtime.onMessage.addListener(
       (message: unknown, _sender: unknown, sendResponse: (res?: unknown) => void) => {
-        const msg = message as { type?: string } | undefined;
+        const msg = message as { type?: string; reset?: boolean } | undefined;
 
         if (msg?.type === 'MEET_CONNECTION_CHECK') {
           const info = collectSpeakerInfo();
@@ -682,6 +628,7 @@ export default defineContentScript({
             connected: true,
             message: 'Connected to Google Meet',
             speakerInfo: info,
+            meetCode: getMeetCode(),
           });
           return true;
         }
@@ -693,11 +640,25 @@ export default defineContentScript({
           return true;
         }
 
+        if (msg?.type === 'START_CAPTURE') {
+          captions.start({ reset: !!msg.reset });
+          sendResponse({ success: true, meetCode: getMeetCode() });
+          return true;
+        }
+
+        if (msg?.type === 'STOP_CAPTURE') {
+          captions.stop();
+          sendResponse({ success: true });
+          return true;
+        }
+
+        if (msg?.type === 'GET_CAPTURE_STATE') {
+          sendResponse(captions.getState());
+          return true;
+        }
+
         return false;
       }
     );
-
-    // Initial broadcast
-    setTimeout(broadcastSpeakerInfo, 800);
   },
 });

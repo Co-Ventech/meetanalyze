@@ -2,6 +2,11 @@ const { StatusCodes } = require("http-status-codes");
 const User = require("../models/user");
 const { signJwt } = require("../utils/jwt-sign");
 
+const sanitize = (user) => {
+    const { password, ...rest } = user.toJSON();
+    return rest;
+}
+
 const createUser = async ({ email, name, password, userRole }) => {
     try {
         const userCreate = await User.create({
@@ -14,10 +19,13 @@ const createUser = async ({ email, name, password, userRole }) => {
         return {
             status: StatusCodes.CREATED,
             message: "User Created Successfully",
-            data: userCreate.toJSON()
+            data: sanitize(userCreate)
         }
     } catch (e) {
         console.log(e)
+        if (e.name === 'SequelizeUniqueConstraintError') {
+            return { status: StatusCodes.CONFLICT, message: "An account with this email already exists" }
+        }
         return {
             status: StatusCodes.INTERNAL_SERVER_ERROR,
             message: "Error during User Creation: " + e.message
@@ -26,7 +34,7 @@ const createUser = async ({ email, name, password, userRole }) => {
 }
 
 const loginUser = async ({ email, password }) => {
-    const user = await User.findOne({
+    const user = await User.scope(null).findOne({
         where: {
             email
         }
@@ -36,7 +44,6 @@ const loginUser = async ({ email, password }) => {
         return {
             status: StatusCodes.NOT_FOUND,
             message: "User Not Found",
-            data: userCreate.toJSON()
         }
     }
     const isValid = await user.validatePassword(password);
@@ -49,13 +56,14 @@ const loginUser = async ({ email, password }) => {
     }
 
     //create access token for the user
-    const token = signJwt({ email });
+    const token = signJwt({ userId: user.user_id, email: user.email });
 
     return {
         status: StatusCodes.OK,
         message: "User Logged in",
         data: {
-            accessToken: token
+            accessToken: token,
+            user: sanitize(user)
         }
     }
 }
