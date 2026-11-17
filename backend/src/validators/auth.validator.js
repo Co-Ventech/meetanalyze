@@ -15,12 +15,12 @@ const registerValidator = (req, res, done) => {
     try {
         const { error } = registerValidatorSchema.validate(req.body);
         if (error) {
-            return res.status(400).send(error.details[0].message);
+            return res.status(400).send({ success: false, message: error.details[0].message });
         }
         done();
     } catch (error) {
         console.error("validators->authValidator.js->registerValidator");
-        console.log(err)
+        console.log(error)
     }
 }
 
@@ -28,12 +28,12 @@ const loginValidator = (req, res, done) => {
     try {
         const { error } = loginSchema.validate(req.body);
         if (error) {
-            return res.status(400).send(error.details[0].message);
+            return res.status(400).send({ success: false, message: error.details[0].message });
         }
         done();
     } catch (error) {
         console.error("validators->authValidator.js->registerValidator");
-        console.log(err)
+        console.log(error)
     }
 }
 

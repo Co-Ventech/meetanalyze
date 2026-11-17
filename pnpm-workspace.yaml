@@ -1,6 +1,7 @@
 packages:
   - 'frontend'
   - 'backend'
+  - 'dashboard'
 
 allowBuilds:
   bcrypt: true

@@ -1,266 +1,115 @@
 import { useState, useEffect, useCallback } from 'react';
 import { getGoogleMeetTab } from '../../utils/check-google-meet-connection';
-import type { TranscriptTurn, PartialTranscriptState, SpeakerInfo } from '../../common/types';
+import type { CaptureMeta, PartialTranscriptState, TranscriptTurn } from '../../common/types';
 
-declare const chrome: any;
+const STORAGE_KEYS = ['isRecording', 'captionsOn', 'partialTranscript', 'finalTranscripts', 'captureMeta', 'captureError'];
 
-export interface UseRealtimeTranscriptionOptions {
-  apiBaseUrl?: string;
-  onTranscript?: (text: string, isFinal: boolean) => void;
-  onError?: (error: Error) => void;
-}
-
-function normalizeTurns(items: any[]): TranscriptTurn[] {
-  if (!Array.isArray(items)) return [];
-  return items.map((item, idx) => {
-    if (typeof item === 'string') {
-      return {
-        id: `legacy_${idx}`,
-        speaker: 'Participant',
-        isSelf: false,
-        text: item,
-        timestamp: '',
-      };
-    }
-    return item;
-  });
-}
-
-function normalizePartial(partial: any): PartialTranscriptState | null {
-  if (!partial) return null;
-  if (typeof partial === 'string') {
-    return partial.trim() ? { speaker: 'Speaker', isSelf: false, text: partial } : null;
-  }
-  if (typeof partial === 'object' && partial.text?.trim()) {
-    return partial;
-  }
-  return null;
-}
-
-export function useRealtimeTranscription({
-  apiBaseUrl = 'http://localhost:5000',
-  onTranscript,
-  onError,
-}: UseRealtimeTranscriptionOptions = {}) {
+/**
+ * Popup / side-panel view of the caption capture running in the Google Meet tab.
+ * All state lives in chrome.storage.local (written by the content script); this hook mirrors it
+ * and sends start/stop commands to the Meet tab.
+ */
+export function useRealtimeTranscription() {
   const [isRecording, setIsRecording] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
-  const [isTabAudioCaptured, setIsTabAudioCaptured] = useState(false);
+  const [captionsOn, setCaptionsOn] = useState(false);
   const [partialTranscript, setPartialTranscript] = useState<PartialTranscriptState | null>(null);
   const [finalTranscripts, setFinalTranscripts] = useState<TranscriptTurn[]>([]);
-  const [speakerInfo, setSpeakerInfo] = useState<SpeakerInfo | null>(null);
+  const [captureMeta, setCaptureMeta] = useState<CaptureMeta | null>(null);
+  const [captureNotice, setCaptureNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isPermissionRequired, setIsPermissionRequired] = useState(false);
 
-  // Sync state from chrome.storage and active background/offscreen recorder on mount
   useEffect(() => {
-    let isMounted = true;
+    let mounted = true;
 
-    // 1. Read persisted state from chrome.storage.local
-    if (typeof chrome !== 'undefined' && chrome?.storage?.local) {
-      chrome.storage.local.get(
-        ['isRecording', 'isTabAudioCaptured', 'partialTranscript', 'finalTranscripts', 'speakerInfo'],
-        (stored: any) => {
-          if (!isMounted || !stored) return;
-          if (typeof stored.isRecording === 'boolean') {
-            setIsRecording(stored.isRecording);
-          }
-          if (typeof stored.isTabAudioCaptured === 'boolean') {
-            setIsTabAudioCaptured(stored.isTabAudioCaptured);
-          }
-          if (stored.speakerInfo) {
-            setSpeakerInfo(stored.speakerInfo);
-          }
-          setPartialTranscript(normalizePartial(stored.partialTranscript));
-          if (Array.isArray(stored.finalTranscripts)) {
-            setFinalTranscripts(normalizeTurns(stored.finalTranscripts));
-          }
-        }
-      );
-    }
-
-    // 2. Query active offscreen state
-    try {
-      chrome.runtime?.sendMessage?.({ type: 'GET_RECORDING_STATE' }, (response: any) => {
-        if (!isMounted || !response) return;
-        if (typeof response.isRecording === 'boolean') {
-          setIsRecording(response.isRecording);
-        }
-        if (typeof response.isTabAudioCaptured === 'boolean') {
-          setIsTabAudioCaptured(response.isTabAudioCaptured);
-        }
-        if (response.speakerInfo) {
-          setSpeakerInfo(response.speakerInfo);
-        }
-        setPartialTranscript(normalizePartial(response.partialTranscript));
-        if (Array.isArray(response.finalTranscripts)) {
-          setFinalTranscripts(normalizeTurns(response.finalTranscripts));
-        }
-      });
-    } catch (err) {
-      console.warn('[MeetAnalyze] Could not query initial recording state:', err);
-    }
-
-    // 3. Listen to live events broadcast from offscreen and background
-    const messageListener = (message: any) => {
-      if (!isMounted || !message) return;
-
-      if (message.type === 'RECORDING_STARTED') {
-        setIsRecording(true);
-        setIsConnecting(false);
-        setIsTabAudioCaptured(!!message.isTabAudioCaptured);
-      } else if (message.type === 'TRANSCRIPT_UPDATE') {
-        const normPartial = normalizePartial(message.partialTranscript);
-        setPartialTranscript(normPartial);
-
-        if (Array.isArray(message.finalTranscripts)) {
-          setFinalTranscripts(normalizeTurns(message.finalTranscripts));
-        }
-        if (onTranscript && (normPartial?.text || message.isFinal)) {
-          onTranscript(normPartial?.text || '', !!message.isFinal);
-        }
-      } else if (message.type === 'SPEAKER_INFO_DISPATCH' || message.type === 'SPEAKER_INFO_UPDATED') {
-        if (message.speakerInfo) {
-          setSpeakerInfo(message.speakerInfo);
-        }
-      } else if (message.type === 'RECORDING_STOPPED') {
-        setIsRecording(false);
-        setIsConnecting(false);
-        setIsTabAudioCaptured(false);
-        setPartialTranscript(null);
-        if (Array.isArray(message.finalTranscripts)) {
-          setFinalTranscripts(normalizeTurns(message.finalTranscripts));
-        }
-      } else if (message.type === 'RECORDING_ERROR') {
-        setIsRecording(false);
-        setIsConnecting(false);
-        setError(message.error || 'Recording error occurred in background');
+    const apply = (values: Record<string, any>) => {
+      if (!mounted) return;
+      if ('isRecording' in values) {
+        setIsRecording(!!values.isRecording);
+        if (values.isRecording) setIsConnecting(false);
       }
+      if ('captionsOn' in values) setCaptionsOn(!!values.captionsOn);
+      if ('partialTranscript' in values) {
+        const p = values.partialTranscript;
+        setPartialTranscript(p && typeof p === 'object' && p.text?.trim() ? p : null);
+      }
+      if ('finalTranscripts' in values) {
+        setFinalTranscripts(Array.isArray(values.finalTranscripts) ? values.finalTranscripts : []);
+      }
+      if ('captureMeta' in values) setCaptureMeta(values.captureMeta ?? null);
+      if ('captureError' in values) setCaptureNotice(values.captureError ?? null);
     };
 
-    chrome.runtime?.onMessage?.addListener(messageListener);
+    browser.storage.local.get(STORAGE_KEYS).then(apply).catch(() => {});
+
+    const onChanged = (changes: Record<string, { newValue?: unknown }>, area: string) => {
+      if (area !== 'local') return;
+      const values: Record<string, unknown> = {};
+      for (const key of STORAGE_KEYS) if (key in changes) values[key] = changes[key]!.newValue;
+      if (Object.keys(values).length) apply(values);
+    };
+    browser.storage.onChanged.addListener(onChanged);
 
     return () => {
-      isMounted = false;
-      chrome.runtime?.onMessage?.removeListener?.(messageListener);
+      mounted = false;
+      browser.storage.onChanged.removeListener(onChanged);
     };
-  }, [onTranscript]);
+  }, []);
+
+  const sendToMeetTab = useCallback(async (message: Record<string, unknown>) => {
+    const tab = await getGoogleMeetTab();
+    if (!tab?.id) throw new Error('Open your Google Meet call in a tab first.');
+    try {
+      return await browser.tabs.sendMessage(tab.id, message);
+    } catch {
+      throw new Error('Could not reach the Google Meet tab. Reload the Meet tab and try again.');
+    }
+  }, []);
 
   const startRecording = useCallback(async () => {
+    setError(null);
+    setIsConnecting(true);
     try {
-      setError(null);
-      setIsPermissionRequired(false);
-      setIsConnecting(true);
-
-      // 1. Check microphone permission in foreground
-      try {
-        const testStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        // Immediately release test stream
-        testStream.getTracks().forEach((t) => t.stop());
-      } catch (micErr: unknown) {
-        const err = micErr as { name?: string; message?: string };
-        if (
-          err.name === 'NotAllowedError' ||
-          err.name === 'PermissionDeniedError' ||
-          err.name === 'PermissionDismissedError' ||
-          err.message?.toLowerCase().includes('dismissed') ||
-          err.message?.toLowerCase().includes('permission')
-        ) {
-          setIsPermissionRequired(true);
-          setIsConnecting(false);
-          throw new Error('Microphone permission required. Please grant permission once in the permission tab.');
-        }
-      }
-
-      // 2. Fetch short-lived token from backend
-      const tokenRes = await fetch(`${apiBaseUrl}/api/v1/transcription/token`);
-      if (!tokenRes.ok) {
-        let errMessage = `Failed to fetch streaming token from backend (HTTP ${tokenRes.status})`;
-        try {
-          const errData = await tokenRes.json();
-          if (errData?.message) errMessage = errData.message;
-        } catch {}
-        throw new Error(errMessage);
-      }
-      const data = await tokenRes.json();
-      const token = data?.token;
-      const host = data?.host || 'streaming.assemblyai.com';
-      if (!token) {
-        throw new Error('No token returned from backend server.');
-      }
-
-      // 3. Acquire Google Meet Tab Media Stream ID
-      let streamId: string | undefined;
-      const meetTab = await getGoogleMeetTab();
-      if (meetTab?.id && chrome.tabCapture?.getMediaStreamId) {
-        try {
-          streamId = await new Promise<string>((resolve, reject) => {
-            chrome.tabCapture.getMediaStreamId({ targetTabId: meetTab.id }, (id: string | null) => {
-              if (chrome.runtime.lastError) {
-                return reject(new Error(chrome.runtime.lastError.message));
-              }
-              if (!id) {
-                return reject(new Error('Failed to acquire tab media stream ID'));
-              }
-              resolve(id);
-            });
-          });
-          setIsTabAudioCaptured(true);
-        } catch (tabErr) {
-          console.warn('[MeetAnalyze] Tab media stream ID acquisition failed:', tabErr);
-          setIsTabAudioCaptured(false);
-        }
-      }
-
-      // 4. Send command to background to start persistent offscreen recording with speaker tracking
-      chrome.runtime.sendMessage(
-        {
-          type: 'START_RECORDING',
-          streamId,
-          token,
-          host,
-          targetTabId: meetTab?.id,
-        },
-        (res: any) => {
-          if (!res?.success) {
-            setError(res?.error || 'Failed to start background transcription');
-            setIsConnecting(false);
-          }
-        }
-      );
-    } catch (err: unknown) {
-      const e = err as Error;
+      const tab = await getGoogleMeetTab();
+      const url = tab?.url || '';
+      const meetCode = url.match(/meet\.google\.com\/([a-z]{3,4}-[a-z]{3,4}-[a-z]{3,4})/i)?.[1] || '';
+      // Start a fresh transcript when this is a different meeting from the one already captured
+      const reset = !captureMeta || captureMeta.meetCode !== meetCode;
+      const res: any = await sendToMeetTab({ type: 'START_CAPTURE', reset });
+      if (!res?.success) throw new Error('Google Meet tab did not start caption capture.');
+    } catch (e: any) {
+      setError(e?.message || 'Failed to start caption capture');
+    } finally {
       setIsConnecting(false);
-      setError(e.message || 'Unknown error occurred while starting transcription');
-      if (onError) onError(e);
     }
-  }, [apiBaseUrl, onError]);
+  }, [captureMeta, sendToMeetTab]);
 
-  const stopRecording = useCallback(() => {
-    chrome.runtime?.sendMessage?.({ type: 'STOP_RECORDING' });
-  }, []);
+  const stopRecording = useCallback(async () => {
+    try {
+      await sendToMeetTab({ type: 'STOP_CAPTURE' });
+    } catch {
+      // Meet tab is gone: just mark capture stopped
+      await browser.storage.local.set({ isRecording: false, partialTranscript: null, captionsOn: false });
+    }
+  }, [sendToMeetTab]);
 
-  const clearTranscripts = useCallback(() => {
+  const clearTranscripts = useCallback(async () => {
     setFinalTranscripts([]);
     setPartialTranscript(null);
-    chrome.runtime?.sendMessage?.({ type: 'CLEAR_TRANSCRIPTS' });
-  }, []);
-
-  const setGuestName = useCallback((name: string, originalName?: string) => {
-    chrome.runtime?.sendMessage?.({ type: 'SET_GUEST_NAME', name, originalName });
+    await browser.storage.local.set({ finalTranscripts: [], partialTranscript: null, captureMeta: null });
   }, []);
 
   return {
     isRecording,
     isConnecting,
-    isTabAudioCaptured,
-    isPermissionRequired,
+    captionsOn,
     partialTranscript,
     finalTranscripts,
-    speakerInfo,
+    captureMeta,
+    captureNotice,
     error,
     startRecording,
     stopRecording,
     clearTranscripts,
-    setGuestName,
   };
 }

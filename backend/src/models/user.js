@@ -49,22 +49,23 @@ const User = sequelize.define("user", {
 
 
 // create a hashed password before inserting it into DB
-User.addHook('beforeCreate', (user, options) => {
+User.addHook('beforeCreate', async (user) => {
   if (user.password) {
-    user.password = encryptPassword(user.password);
+    user.password = await encryptPassword(user.password);
   }
 });
 
 
 //this is for password validation (during login or any sort of authentication)
-User.prototype.validatePassword = async (password) => {
+User.prototype.validatePassword = async function (password) {
+  if (!this.password) return false;
   return await comparePassword(password, this.password)
 }
 
 //for updation hook
 User.addHook('beforeUpdate', async (user) => {
   if (user.changed('password')) {
-    user.password = encryptPassword(user.password);
+    user.password = await encryptPassword(user.password);
   }
 });
 

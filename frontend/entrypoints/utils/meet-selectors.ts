@@ -29,9 +29,21 @@ export const MEET_SELECTORS = {
   // Join/Leave toast notifications and snackbars
   toastAlerts: 'div[role="status"], div[role="alert"], div[aria-live="polite"], div[aria-live="assertive"], div.M4FdEc, div.NSO8L',
 
-  // Closed Captions (real-time backup)
+  // Closed Captions — the transcript source. Meet's class names are obfuscated and change, so every
+  // selector has fallbacks, and caption-capture also falls back to a structural scan of the region.
   captionContainer: '[role="region"][aria-label*="caption" i], [aria-label*="Closed captions" i], [jsname="dsZIyd"], .nMcdL.bj4p3b',
   captionSpeakers: '.NWpY1d, .zs7s8d, [jsname="tgaKEf"] span:first-child',
+  // One block per continuous stretch of speech by one speaker
+  captionBlocks: '.nMcdL, .TBMuR, [jsname="tgaKEf"]',
+  // The caption words inside a block
+  captionText: '.ygicle, .bh44bd, .iTTPOb, [jsname="YSxPC"]',
+  // Captions toggle in the bottom call-controls bar
+  captionsOnButton: 'button[aria-label*="Turn on captions" i], button[aria-label*="captions" i][aria-pressed="false"]',
+  captionsOffButton: 'button[aria-label*="Turn off captions" i], button[aria-label*="captions" i][aria-pressed="true"]',
+  // Present only once the user has actually joined the call (the Leave call button)
+  inCallIndicator: 'button[aria-label*="Leave call" i], [jsname="CQylAd"]',
+  // Meeting name shown in the call (falls back to document.title / meet code)
+  meetingTitle: '[data-meeting-title], [jscontroller="yEvoid"] div[jsname="r4nke"]',
 
   // Self identification
   googleAccountBtn: 'a[aria-label*="Google Account" i], button[aria-label*="Google Account" i]',
