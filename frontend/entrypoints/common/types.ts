@@ -34,25 +34,3 @@ export interface CaptureStorage {
   captureMeta: CaptureMeta | null;
   captureError: string | null;
 }
-
-export interface SpeakerInterval {
-  speaker: string;
-  start: number;      // epoch ms
-  end: number;        // epoch ms
-}
-
-export interface RecentJoiner {
-  name: string;
-  joinedAt: number;   // epoch ms
-}
-
-export interface SpeakerInfo {
-  selfName: string;
-  activeSpeaker: string | null;
-  allParticipants: string[];
-  guests: string[];
-  intervals?: SpeakerInterval[];
-  recentJoiners?: RecentJoiner[];
-  newlyJoined?: string[];
-  leftParticipants?: string[];
-}

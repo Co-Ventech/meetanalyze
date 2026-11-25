@@ -33,7 +33,7 @@ export interface CaptionCaptureDeps {
 const formatClock = (ms: number) =>
   new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-export function getMeetCode(): string {
+function getMeetCode(): string {
   const m = location.pathname.match(/^\/([a-z]{3,4}-[a-z]{3,4}-[a-z]{3,4})/i);
   return m?.[1] ?? '';
 }
@@ -394,11 +394,5 @@ export function createCaptionCapture(deps: CaptionCaptureDeps) {
     }
   });
 
-  return {
-    start,
-    stop,
-    restore,
-    isCapturing: () => capturing,
-    getState: snapshot,
-  };
+  return { start, stop, restore };
 }

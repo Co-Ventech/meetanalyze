@@ -1,5 +1,4 @@
 import { useState, useEffect, type FormEvent } from 'react';
-import './App.css';
 import { checkLinkConnection } from '../utils/check-google-meet-connection';
 import { useRealtimeTranscription } from './hooks/useRealtimeTranscription';
 import {
@@ -122,7 +121,7 @@ function App() {
         window.close();
       }
     } catch (err) {
-      console.warn('[MeetAnalyze] Side panel open failed:', err);
+      console.warn('Side panel open failed:', err);
     }
   };
 
@@ -180,7 +179,6 @@ function App() {
 
   return (
     <div className="w-full max-w-[420px] min-w-[340px] p-4 bg-slate-900 text-white font-sans rounded-lg shadow-xl flex flex-col gap-3 min-h-[490px]">
-      {/* Header */}
       <div className="flex items-center justify-between border-b border-slate-800 pb-3">
         <div>
           <h1 className="text-lg font-bold bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
@@ -204,7 +202,7 @@ function App() {
             className="text-xs px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded transition cursor-pointer"
             title="Dock to Chrome Side Panel (keeps view open during meeting)"
           >
-            📌
+            Dock
           </button>
           <button
             onClick={checkMeet}
@@ -215,8 +213,6 @@ function App() {
           </button>
         </div>
       </div>
-
-      {/* Account */}
       {sessionLoaded && !session && <LoginForm onLoggedIn={setSession} />}
       {session && (
         <div className="flex items-center justify-between text-[11px] text-slate-400">
@@ -228,8 +224,6 @@ function App() {
           </button>
         </div>
       )}
-
-      {/* Capture status */}
       <div className="flex items-center gap-2 text-[11px]">
         <div
           className={`flex-1 flex items-center justify-center gap-1.5 py-1 px-2 rounded border ${
@@ -240,26 +234,21 @@ function App() {
               : 'bg-slate-950 border-slate-800 text-slate-500'
           }`}
         >
-          <span>💬</span>
           <span>Meet captions: {isRecording ? (captionsOn ? 'Capturing' : 'Waiting…') : 'Off'}</span>
         </div>
         <div
           className="flex items-center justify-center gap-1 py-1 px-2 rounded border bg-slate-950 border-slate-800 text-slate-400 text-[10px]"
           title="Meeting analysis supports English transcripts"
         >
-          <span>🌐</span>
-          <span>EN</span>
+          EN
         </div>
       </div>
 
       {isRecording && captureNotice && (
         <div className="p-2 bg-amber-950/70 border border-amber-700/60 rounded text-[11px] text-amber-200 flex items-start gap-1.5">
-          <span>⚠️</span>
-          <span>{captureNotice}</span>
+          {captureNotice}
         </div>
       )}
-
-      {/* Participants */}
       <div className="bg-slate-950/70 border border-slate-800/80 rounded-md p-2 text-[11px] flex flex-col gap-1.5">
         <div className="flex items-center justify-between">
           <span className="text-slate-400 font-medium text-[10px] uppercase tracking-wider">
@@ -296,8 +285,6 @@ function App() {
           )}
         </div>
       </div>
-
-      {/* Controls */}
       <div className="flex items-center gap-2">
         {!isRecording ? (
           <button
@@ -336,8 +323,6 @@ function App() {
           Clear
         </button>
       </div>
-
-      {/* Analyse & open dashboard */}
       <button
         onClick={handleAnalyze}
         disabled={!session || isSubmitting || !hasTranscript}
@@ -350,10 +335,7 @@ function App() {
             <span>Analysing meeting…</span>
           </>
         ) : (
-          <>
-            <span>📊</span>
-            <span>Show Meeting Insight</span>
-          </>
+          'Show Meeting Insight'
         )}
       </button>
 
@@ -365,9 +347,7 @@ function App() {
               : 'bg-rose-950/80 border border-rose-800/80 text-rose-200'
           }`}
         >
-          <span>
-            {insightMessage.type === 'success' ? '✅' : '⚠️'} {insightMessage.text}
-          </span>
+          <span>{insightMessage.text}</span>
           <div className="flex items-center gap-1 shrink-0">
             {insightMessage.url && (
               <button onClick={() => openUrl(insightMessage.url!)} className="underline text-[11px] cursor-pointer">
@@ -386,8 +366,6 @@ function App() {
           <strong>Error:</strong> {error}
         </div>
       )}
-
-      {/* Live transcript */}
       <div className="flex-1 bg-slate-950/90 border border-slate-800 rounded-md p-3 overflow-y-auto max-h-[260px] flex flex-col gap-2.5 select-text text-xs leading-relaxed">
         {!hasTranscript && (
           <div className="m-auto text-center text-slate-500 text-xs py-8">
