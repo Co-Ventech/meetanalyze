@@ -34,3 +34,12 @@ export interface CaptureStorage {
   captureMeta: CaptureMeta | null;
   captureError: string | null;
 }
+
+/** Result of sending a captured meeting to the backend, keyed to the capture by `startedAt`. */
+export interface MeetingSubmission {
+  startedAt: number;
+  status: 'processing' | 'ready' | 'failed' | 'signed_out';
+  meetingId?: string;
+  url?: string;
+  message?: string;
+}

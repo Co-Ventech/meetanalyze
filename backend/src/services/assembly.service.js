@@ -12,12 +12,13 @@ const GATEWAYS = [
   'https://llm-gateway.eu.assemblyai.com/v1/chat/completions',
 ];
 
-// Primary model verified for this account first, followed by standard fallback models
+// Strongest model first: the 4B model is fast but misreads long or messy caption transcripts,
+// so it is only a last resort.
 const MODELS = [
-  'qwen3.5-4b-32k-fast',
   'claude-sonnet-4-6',
-  'gemini-2.5-flash',
   'gpt-4.1',
+  'gemini-2.5-flash',
+  'qwen3.5-4b-32k-fast',
 ];
 
 const OUTCOMES = ['Successful', 'Partially Successful', 'Unsuccessful'];

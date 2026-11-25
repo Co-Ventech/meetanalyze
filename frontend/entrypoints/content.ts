@@ -136,17 +136,25 @@ export default defineContentScript({
       return [cachedSelfName, ...names].filter(Boolean);
     }
 
-    const captions = createCaptionCapture({ getSelfName, cleanName, isInvalidName, getParticipantNames });
+    const captions = createCaptionCapture({
+      getSelfName,
+      cleanName,
+      isInvalidName,
+      getParticipantNames,
+      onMeetingEnded: (meta, transcript) => {
+        browser.runtime.sendMessage({ type: 'MEETING_ENDED', meta, transcript }).catch(() => {});
+      },
+    });
     captions.restore();
 
     browser.runtime.onMessage.addListener((message: unknown, _sender: unknown, sendResponse: (res?: unknown) => void) => {
-      const msg = message as { type?: string; reset?: boolean } | undefined;
+      const msg = message as { type?: string } | undefined;
       switch (msg?.type) {
         case 'MEET_CONNECTION_CHECK':
           sendResponse({ connected: true, message: 'Connected to Google Meet' });
           return true;
         case 'START_CAPTURE':
-          captions.start({ reset: !!msg.reset });
+          captions.start();
           sendResponse({ success: true });
           return true;
         case 'STOP_CAPTURE':

@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { getGoogleMeetTab } from '../../utils/check-google-meet-connection';
-import type { CaptureMeta, PartialTranscriptState, TranscriptTurn } from '../../common/types';
+import type { CaptureMeta, MeetingSubmission, PartialTranscriptState, TranscriptTurn } from '../../common/types';
 
-const STORAGE_KEYS = ['isRecording', 'captionsOn', 'partialTranscript', 'finalTranscripts', 'captureMeta', 'captureError'];
+const STORAGE_KEYS = ['isRecording', 'captionsOn', 'partialTranscript', 'finalTranscripts', 'captureMeta', 'captureError', 'lastSubmission'];
 
 /**
  * Popup / side-panel view of the caption capture running in the Google Meet tab.
@@ -18,6 +18,7 @@ export function useRealtimeTranscription() {
   const [captureMeta, setCaptureMeta] = useState<CaptureMeta | null>(null);
   const [captureNotice, setCaptureNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [lastSubmission, setLastSubmission] = useState<MeetingSubmission | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -38,6 +39,7 @@ export function useRealtimeTranscription() {
       }
       if ('captureMeta' in values) setCaptureMeta(values.captureMeta ?? null);
       if ('captureError' in values) setCaptureNotice(values.captureError ?? null);
+      if ('lastSubmission' in values) setLastSubmission(values.lastSubmission ?? null);
     };
 
     browser.storage.local.get(STORAGE_KEYS).then(apply).catch(() => {});
@@ -70,19 +72,14 @@ export function useRealtimeTranscription() {
     setError(null);
     setIsConnecting(true);
     try {
-      const tab = await getGoogleMeetTab();
-      const url = tab?.url || '';
-      const meetCode = url.match(/meet\.google\.com\/([a-z]{3,4}-[a-z]{3,4}-[a-z]{3,4})/i)?.[1] || '';
-      // Start a fresh transcript when this is a different meeting from the one already captured
-      const reset = !captureMeta || captureMeta.meetCode !== meetCode;
-      const res: any = await sendToMeetTab({ type: 'START_CAPTURE', reset });
+      const res: any = await sendToMeetTab({ type: 'START_CAPTURE' });
       if (!res?.success) throw new Error('Google Meet tab did not start caption capture.');
     } catch (e: any) {
       setError(e?.message || 'Failed to start caption capture');
     } finally {
       setIsConnecting(false);
     }
-  }, [captureMeta, sendToMeetTab]);
+  }, [sendToMeetTab]);
 
   const stopRecording = useCallback(async () => {
     try {
@@ -108,6 +105,8 @@ export function useRealtimeTranscription() {
     captureMeta,
     captureNotice,
     error,
+    // only the submission for the capture currently shown
+    submission: lastSubmission && lastSubmission.startedAt === captureMeta?.startedAt ? lastSubmission : null,
     startRecording,
     stopRecording,
     clearTranscripts,

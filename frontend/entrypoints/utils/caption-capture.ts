@@ -1,4 +1,4 @@
-import type { CaptureMeta, CaptureStorage, PartialTranscriptState, TranscriptTurn } from '../common/types';
+import type { CaptureMeta, CaptureStorage, MeetingSubmission, PartialTranscriptState, TranscriptTurn } from '../common/types';
 import { MEET_SELECTORS } from './meet-selectors';
 import { mergeCaptionText, normalizeCaption } from './caption-merge';
 
@@ -13,6 +13,8 @@ const SCAN_INTERVAL_MS = 400;     // safety-net scan in addition to the Mutation
 const PERSIST_THROTTLE_MS = 300;
 const CAPTIONS_RETRY_MS = 3000;
 const PARTICIPANT_SCAN_MS = 5000;
+// Restarting within this window after a stop continues the same transcript; later, a new one starts.
+const RESUME_WINDOW_MS = 5 * 60 * 1000;
 
 interface BlockState {
   speaker: string;
@@ -28,6 +30,8 @@ export interface CaptionCaptureDeps {
   cleanName: (name: string) => string;
   isInvalidName: (name: string) => boolean;
   getParticipantNames: () => string[];
+  /** Called when the user leaves the call while capturing. */
+  onMeetingEnded: (meta: CaptureMeta, transcript: TranscriptTurn[]) => void;
 }
 
 const formatClock = (ms: number) =>
@@ -56,6 +60,7 @@ export function createCaptionCapture(deps: CaptionCaptureDeps) {
   let meta: CaptureMeta | null = null;
   let turnCounter = 0;
   let seenInCall = false;
+  let submittedStartedAt: number | null = null;
 
   const blocks = new Map<Element, BlockState>();
   let observer: MutationObserver | null = null;
@@ -176,7 +181,7 @@ export function createCaptionCapture(deps: CaptionCaptureDeps) {
     const inCall = !!document.querySelector(MEET_SELECTORS.inCallIndicator);
     if (inCall) seenInCall = true;
     else if (seenInCall) {
-      stop();
+      stop({ meetingEnded: true });
       return;
     }
 
@@ -317,9 +322,16 @@ export function createCaptionCapture(deps: CaptionCaptureDeps) {
 
   // ---------- public API ----------
 
-  function start(options: { reset?: boolean } = {}) {
+  function start(options: { resume?: boolean } = {}) {
     const meetCode = getMeetCode();
-    if (options.reset || !meta || meta.meetCode !== meetCode) {
+    const canContinue =
+      !!meta &&
+      meta.meetCode === meetCode &&
+      meta.startedAt !== submittedStartedAt &&
+      (options.resume || (!!meta.endedAt && Date.now() - meta.endedAt < RESUME_WINDOW_MS));
+    if (canContinue && meta) {
+      meta.endedAt = undefined;
+    } else {
       finals = [];
       partial = null;
       meta = {
@@ -329,8 +341,6 @@ export function createCaptionCapture(deps: CaptionCaptureDeps) {
         selfName: deps.getSelfName(),
         participants: [],
       };
-    } else {
-      meta.endedAt = undefined;
     }
     capturing = true;
     captionsOn = false;
@@ -348,7 +358,7 @@ export function createCaptionCapture(deps: CaptionCaptureDeps) {
     persistNow();
   }
 
-  function stop() {
+  function stop(options: { meetingEnded?: boolean } = {}) {
     if (!capturing) return;
     commitAll();
     capturing = false;
@@ -365,18 +375,20 @@ export function createCaptionCapture(deps: CaptionCaptureDeps) {
       if (meta.title.startsWith('Meeting ') || meta.title === 'Google Meet call') meta.title = getMeetingTitle(meta.meetCode);
     }
     persistNow();
+    if (options.meetingEnded && meta) deps.onMeetingEnded(meta, finals);
   }
 
   /** Resume after a page reload if a capture for this same meeting was running. */
   async function restore() {
     try {
-      const stored = (await browser.storage.local.get(['isRecording', 'finalTranscripts', 'captureMeta'])) as Partial<CaptureStorage>;
+      const stored = (await browser.storage.local.get(['isRecording', 'finalTranscripts', 'captureMeta', 'lastSubmission'])) as Partial<CaptureStorage> & { lastSubmission?: MeetingSubmission };
+      submittedStartedAt = stored.lastSubmission?.startedAt ?? null;
       const storedMeta = stored.captureMeta ?? null;
       if (storedMeta && storedMeta.meetCode && storedMeta.meetCode === getMeetCode()) {
         meta = storedMeta;
         finals = Array.isArray(stored.finalTranscripts) ? stored.finalTranscripts : [];
         turnCounter = finals.length;
-        if (stored.isRecording) start();
+        if (stored.isRecording) start({ resume: true });
       } else if (stored.isRecording) {
         // A capture was left running for another meeting/tab that is gone; mark it stopped.
         await browser.storage.local.set({ isRecording: false, partialTranscript: null, captionsOn: false });
@@ -386,7 +398,14 @@ export function createCaptionCapture(deps: CaptionCaptureDeps) {
     }
   }
 
-  // Save what we have if the tab is closed mid-capture
+  // Never append to a transcript that has already been sent for analysis.
+  browser.storage.onChanged.addListener((changes, area) => {
+    const next = changes.lastSubmission?.newValue as MeetingSubmission | undefined;
+    if (area === 'local' && next) submittedStartedAt = next.startedAt;
+  });
+
+  // Save what we have if the tab is closed or reloaded mid-capture. A reload resumes via restore();
+  // a closed tab is detected by the background, which then submits the meeting.
   window.addEventListener('pagehide', () => {
     if (capturing) {
       commitAll();

@@ -36,6 +36,8 @@ function LoginForm({ onLoggedIn }: { onLoggedIn: (s: AuthSession) => void }) {
       <p className="text-xs text-slate-300 font-medium">Sign in to save meetings to your dashboard</p>
       <input
         type="email"
+        name="email"
+        autoComplete="email"
         required
         placeholder="Email"
         value={email}
@@ -44,6 +46,8 @@ function LoginForm({ onLoggedIn }: { onLoggedIn: (s: AuthSession) => void }) {
       />
       <input
         type="password"
+        name="password"
+        autoComplete="current-password"
         required
         placeholder="Password"
         value={password}
@@ -89,6 +93,7 @@ function App() {
     captureMeta,
     captureNotice,
     error,
+    submission,
     startRecording,
     stopRecording,
     clearTranscripts,
@@ -133,7 +138,11 @@ function App() {
   };
 
   const handleAnalyze = async () => {
-    if (!session) return;
+    if (submission?.url) {
+      openUrl(submission.url);
+      return;
+    }
+    if (!session || submission?.status === 'processing') return;
     setInsightMessage(null);
 
     const turns = [...finalTranscripts];
@@ -156,6 +165,17 @@ function App() {
       if (isRecording) await stopRecording();
       const result = await submitMeeting(session, captureMeta, turns);
       const url = meetingDashboardUrl(result.id);
+      if (captureMeta) {
+        await browser.storage.local.set({
+          lastSubmission: {
+            startedAt: captureMeta.startedAt,
+            status: result.analysisFailed ? 'failed' : 'ready',
+            meetingId: result.id,
+            url,
+            message: result.message,
+          },
+        });
+      }
       if (result.analysisFailed) {
         setInsightMessage({
           type: 'error',
@@ -175,6 +195,7 @@ function App() {
   };
 
   const hasTranscript = finalTranscripts.length > 0 || !!partialTranscript?.text;
+  const analysingInBackground = submission?.status === 'processing';
   const participants = captureMeta?.participants ?? [];
 
   return (
@@ -325,19 +346,25 @@ function App() {
       </div>
       <button
         onClick={handleAnalyze}
-        disabled={!session || isSubmitting || !hasTranscript}
+        disabled={!submission?.url && (!session || isSubmitting || analysingInBackground || !hasTranscript)}
         className="w-full py-2 px-3 bg-gradient-to-r from-indigo-600 via-blue-600 to-indigo-700 hover:from-indigo-500 hover:to-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium text-xs rounded-md transition-all flex items-center justify-center gap-1.5 shadow cursor-pointer"
         title={session ? 'Analyse the meeting and open the results dashboard' : 'Sign in first'}
       >
-        {isSubmitting ? (
+        {isSubmitting || analysingInBackground ? (
           <>
             <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
             <span>Analysing meeting…</span>
           </>
+        ) : submission?.url ? (
+          'Open Meeting Insight'
         ) : (
           'Show Meeting Insight'
         )}
       </button>
+
+      {!insightMessage && submission?.message && submission.status !== 'ready' && (
+        <div className="p-2 rounded text-xs bg-rose-950/80 border border-rose-800/80 text-rose-200">{submission.message}</div>
+      )}
 
       {insightMessage && (
         <div
