@@ -310,11 +310,12 @@ export function createCaptionCapture(deps: CaptionCaptureDeps) {
     if (!meta) return;
     const selfName = deps.getSelfName();
     if (selfName && selfName !== 'You') meta.selfName = selfName;
-    const names = new Set(meta.participants);
+    // Re-check stored names too, so junk captured before a filter fix doesn't stick around.
+    const names = new Set(meta.participants.map(deps.cleanName).filter((n) => !deps.isInvalidName(n)));
     if (meta.selfName && meta.selfName !== 'You') names.add(meta.selfName);
     for (const n of deps.getParticipantNames()) names.add(n);
     for (const t of finals) if (t.speaker && t.speaker !== 'Participant' && t.speaker !== 'You') names.add(t.speaker);
-    if (names.size !== meta.participants.length) {
+    if (names.size !== meta.participants.length || [...names].some((n, i) => n !== meta!.participants[i])) {
       meta.participants = Array.from(names);
       persistSoon();
     }

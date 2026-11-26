@@ -1,31 +1,10 @@
-import { MEET_SELECTORS, UI_BLACKLIST, JOIN_NOTIFICATION_PATTERNS } from './utils/meet-selectors';
+import { MEET_SELECTORS, JOIN_NOTIFICATION_PATTERNS } from './utils/meet-selectors';
+import { cleanName, isInvalidName, toName } from './utils/participant-names';
 import { createCaptionCapture } from './utils/caption-capture';
 
 const SELF_LABEL = 'You';
 const NAME_NODE = 'div.zWGUkf, [role="heading"][aria-level="3"]';
 const ICON_CLASSES = '.google-material-icons, .material-icons, [class*="material-symbols"]';
-
-const cleanName = (name: string): string =>
-  (name || '')
-    .replace(/\s*\((?:You|Presentation|Screen)\)\s*$/i, '')
-    .replace(/^\s*\(You\)\s*/i, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-/** True for Meet UI strings and icon ligatures that must never be taken as a person's name. */
-const isInvalidName = (str: string): boolean => {
-  if (!str || str.length < 2 || str.length > 50) return true;
-  const lower = str.toLowerCase().trim();
-  if (lower.includes('_')) return true; // icon ligatures are snake_case (more_vert, frame_person)
-  if (/^\d+$/.test(lower) || /^\d{1,2}:\d{2}(\s*(?:am|pm))?$/.test(lower)) return true;
-  return UI_BLACKLIST.some((b) => lower === b || lower.startsWith(`${b}:`));
-};
-
-/** Cleaned name, or null if it isn't a usable participant name. */
-const toName = (raw: string | null | undefined): string | null => {
-  const name = cleanName(raw || '');
-  return name && !isInvalidName(name) && name.toLowerCase() !== 'you' ? name : null;
-};
 
 /** Rejects icons, hidden elements and anything inside a button. */
 const isNameElement = (el: Element): boolean =>
@@ -74,6 +53,10 @@ export default defineContentScript({
   main() {
     // Meet's DOM only shows the local user's name some of the time, so keep the last one found.
     let cachedSelfName = '';
+    // Scans a scraped name has appeared in. Transient UI text (tooltips, labels mid-render) is seen
+    // once; a participant's tile is there scan after scan.
+    const sightings = new Map<string, number>();
+    const CONFIRM_SIGHTINGS = 2;
 
     function findSelfName(): string | null {
       const fromAttr = firstName(document.querySelectorAll('[data-self-name]'), (el) => el.getAttribute('data-self-name'));
@@ -121,6 +104,15 @@ export default defineContentScript({
           add(name);
         }
       }
+
+      const confirmed = new Set<string>();
+      for (const name of names) {
+        const count = (sightings.get(name) ?? 0) + 1;
+        sightings.set(name, count);
+        if (count >= CONFIRM_SIGHTINGS) confirmed.add(name);
+      }
+      names.clear();
+      for (const name of confirmed) names.add(name);
 
       for (const el of document.querySelectorAll(MEET_SELECTORS.toastAlerts)) {
         const text = el.textContent?.trim() || '';

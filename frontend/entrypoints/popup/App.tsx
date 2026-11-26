@@ -1,5 +1,6 @@
 import { useState, useEffect, type FormEvent } from 'react';
 import { checkLinkConnection } from '../utils/check-google-meet-connection';
+import { toName } from '../utils/participant-names';
 import { useRealtimeTranscription } from './hooks/useRealtimeTranscription';
 import {
   AuthError,
@@ -196,7 +197,10 @@ function App() {
 
   const hasTranscript = finalTranscripts.length > 0 || !!partialTranscript?.text;
   const analysingInBackground = submission?.status === 'processing';
-  const participants = captureMeta?.participants ?? [];
+  const selfName = toName(captureMeta?.selfName) ?? toName(session?.user?.name);
+  const participants = captureMeta
+    ? [...new Set([selfName, ...captureMeta.participants.map(toName)].filter((n): n is string => !!n))]
+    : [];
 
   return (
     <div className="w-full max-w-[420px] min-w-[340px] p-4 bg-slate-900 text-white font-sans rounded-lg shadow-xl flex flex-col gap-3 min-h-[490px]">
@@ -280,7 +284,7 @@ function App() {
         <div className="flex items-center flex-wrap gap-1.5">
           {participants.length > 0 ? (
             participants.map((name) => {
-              const isSelf = name === captureMeta?.selfName;
+              const isSelf = name === selfName;
               const speaking = partialTranscript?.speaker === name;
               return (
                 <span
