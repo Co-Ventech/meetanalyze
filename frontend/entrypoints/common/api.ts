@@ -1,4 +1,5 @@
 import type { CaptureMeta, TranscriptTurn } from './types';
+import { toName } from '../utils/participant-names';
 
 const env = (import.meta as any).env ?? {};
 
@@ -56,6 +57,13 @@ export async function submitMeeting(
   meta: CaptureMeta | null,
   transcript: TranscriptTurn[],
 ): Promise<{ id: string; analysisFailed: boolean; message?: string }> {
+  // Meet often never shows the local user's name, so captions label them "You". The person capturing
+  // is the signed-in user, so use their account name instead.
+  const selfName = toName(meta?.selfName) ?? toName(session.user?.name) ?? 'You';
+  const turns = transcript.map((t) => (t.isSelf ? { ...t, speaker: selfName } : t));
+  const participants = [
+    ...new Set([selfName, ...(meta?.participants ?? []).map(toName).filter((n): n is string => !!n)]),
+  ];
   const res = await fetch(`${API_BASE_URL}/api/v1/meetings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.token}` },
@@ -64,8 +72,8 @@ export async function submitMeeting(
       title: meta?.title || null,
       startedAt: meta?.startedAt ? new Date(meta.startedAt).toISOString() : null,
       endedAt: new Date(meta?.endedAt || Date.now()).toISOString(),
-      participants: meta?.participants || [],
-      transcript,
+      participants,
+      transcript: turns,
     }),
   });
 

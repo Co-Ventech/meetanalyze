@@ -1,79 +1,28 @@
-import { MEETING_LINKS } from '../common/constants';
+const isGoogleMeetUrl = (url?: string) => !!url?.includes('meet.google.com');
 
-function isGoogleMeetUrl(url?: string): boolean {
-  if (!url) return false;
-  return url.startsWith(MEETING_LINKS.GOOGLE_MEET.URL) || url.includes('meet.google.com');
-}
-
+/** The active tab if it's a Meet call, otherwise any open Meet tab. */
 export async function getGoogleMeetTab() {
   try {
-    // 1. Check active tab in current window first
-    const [activeTab] = await browser.tabs.query({
-      active: true,
-      currentWindow: true,
-    });
+    const [active] = await browser.tabs.query({ active: true, currentWindow: true });
+    if (active?.id && isGoogleMeetUrl(active.url)) return active;
 
-    if (activeTab?.id && isGoogleMeetUrl(activeTab.url)) {
-      return activeTab;
-    }
+    const meetTabs = await browser.tabs.query({ url: '*://meet.google.com/*' });
+    return meetTabs.find((t) => t.id) ?? null;
   } catch (err) {
-    console.warn('[MeetAnalyze] Failed to query active tab:', err);
+    console.warn('Could not query tabs:', err);
+    return null;
   }
-
-  try {
-    // 2. Query any Google Meet tab across any window by URL pattern
-    const allMeetTabs = await browser.tabs.query({
-      url: '*://meet.google.com/*',
-    });
-
-    if (allMeetTabs.length > 0 && allMeetTabs[0]?.id) {
-      return allMeetTabs[0];
-    }
-  } catch (err) {
-    console.warn('[MeetAnalyze] Failed to query meet tabs by url match:', err);
-  }
-
-  try {
-    // 3. Fallback: query all tabs and filter by URL
-    const allTabs = await browser.tabs.query({});
-    const meetTab = allTabs.find((t) => t?.id && isGoogleMeetUrl(t.url));
-    if (meetTab) {
-      return meetTab;
-    }
-  } catch (err) {
-    console.warn('[MeetAnalyze] Failed to query all tabs fallback:', err);
-  }
-
-  return null;
 }
 
 export async function checkLinkConnection() {
   const tab = await getGoogleMeetTab();
-
-  if (!tab || !tab.id || !isGoogleMeetUrl(tab.url)) {
-    return {
-      connected: false,
-      message: 'Google Meet not detected',
-      tabId: null,
-    };
-  }
+  if (!tab?.id) return { connected: false, message: 'Google Meet not detected', tabId: null };
 
   try {
-    const response = await browser.tabs.sendMessage(tab.id, {
-      type: 'MEET_CONNECTION_CHECK',
-    });
-
-    return {
-      connected: !!response?.connected,
-      message: response?.message || 'Connected to Google Meet',
-      tabId: tab.id,
-    };
+    const response = await browser.tabs.sendMessage(tab.id, { type: 'MEET_CONNECTION_CHECK' });
+    return { connected: !!response?.connected, message: response?.message || 'Connected to Google Meet', tabId: tab.id };
   } catch {
-    // Content script might not have injected yet if page just opened
-    return {
-      connected: true,
-      message: 'Google Meet Active (Tab found)',
-      tabId: tab.id,
-    };
+    // The content script may not have loaded yet in a freshly opened tab.
+    return { connected: true, message: 'Google Meet tab found', tabId: tab.id };
   }
 }

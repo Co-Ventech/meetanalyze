@@ -35,24 +35,11 @@ export interface CaptureStorage {
   captureError: string | null;
 }
 
-export interface SpeakerInterval {
-  speaker: string;
-  start: number;      // epoch ms
-  end: number;        // epoch ms
-}
-
-export interface RecentJoiner {
-  name: string;
-  joinedAt: number;   // epoch ms
-}
-
-export interface SpeakerInfo {
-  selfName: string;
-  activeSpeaker: string | null;
-  allParticipants: string[];
-  guests: string[];
-  intervals?: SpeakerInterval[];
-  recentJoiners?: RecentJoiner[];
-  newlyJoined?: string[];
-  leftParticipants?: string[];
+/** Result of sending a captured meeting to the backend, keyed to the capture by `startedAt`. */
+export interface MeetingSubmission {
+  startedAt: number;
+  status: 'processing' | 'ready' | 'failed' | 'signed_out';
+  meetingId?: string;
+  url?: string;
+  message?: string;
 }
